@@ -36,7 +36,7 @@ const SYMBOL_FALLBACK = {
   trash: '🗑', xmark: '✕', 'square.and.arrow.up': '↑', 'square.and.arrow.down': '↓', lightbulb: '💡',
   'checkmark.circle.fill': '✓', 'exclamationmark.triangle.fill': '⚠', 'xmark.octagon.fill': '⛔', 'info.circle.fill': 'ℹ',
   'building.columns': '🏦', 'arrow.counterclockwise': '↺', house: '🏠', target: '🎯', 'chart.pie': '🧮',
-  'fork.knife': '🥗', 'person.2': '🏡', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
+  'fork.knife': '🥗', 'person.2': '🏡', shippingbox: '📦', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
 };
 function sym(name, cls = '') {
   const url = SYMBOLS[name];
@@ -66,6 +66,9 @@ function fmtIn(n, code) {
 // Moneda de ingresos (saldos, pagos, reparto) y moneda de gastos (costos de productos y servicios).
 const fmt = (n) => fmtIn(n, baseCode());
 const fmtCost = (n) => fmtIn(n, costCode());
+// Monto en la moneda propia de un sobre (p. ej. un pedido que se paga en USD).
+const fmtEnv = (env, n) => fmtIn(n, E.envCurrency(state, env));
+const envIsBase = (env) => E.envCurrency(state, env) === baseCode();
 // Equivalente en la moneda de ingresos de un costo, solo si hay dos monedas.
 const inBase = (costAmount) => (isDual() ? `≈ ${fmt(E.costToBase(state, costAmount))}` : '');
 function monthLabel(m) {
@@ -173,7 +176,7 @@ function refreshSyncStatus() {
 
 // `kind`: 'base' (ingresos, USD) o 'cost' (gastos, p. ej. MXN). Con dos monedas el campo muestra su código.
 const money = (attrs, value, cls = '', kind = 'base') => {
-  const code = kind === 'cost' ? costCode() : baseCode();
+  const code = kind === 'cost' ? costCode() : kind === 'base' ? baseCode() : kind; // o un código explícito (moneda del sobre)
   return `<div class="money ${cls}" data-sym="${esc(currencySymbol(code))}"${isDual() ? ` data-code="${code}"` : ''}><input class="input ${cls.includes('amount') ? 'amount' : ''}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0" value="${value === '' || value == null ? '' : esc(value)}" ${attrs}></div>`;
 };
 const percent = (attrs, value) =>
@@ -281,7 +284,7 @@ function envRow(e, m) {
   } else if (e.role === 'impuestos') {
     detail = `<span class="tiny"><span>${state.settings.taxPct}% de cada pago</span><span>Este mes ${fmt(funded)}</span></span>`;
   } else if (target > 0) {
-    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}${isDual() && E.isManualEnvelope(e) && num(e.monthly) ? ` · ${fmtCost(e.monthly)}` : ''}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
+    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}${isDual() && E.isManualEnvelope(e) && num(e.monthly) && !envIsBase(e) ? ` · ${fmtEnv(e, e.monthly)}` : ''}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
   } else {
     detail = `<span class="tiny"><span>${e.role === 'libre' ? 'Recibe parte del excedente' : e.role === 'inversion' ? 'Recibe el excedente cuando el fondo está completo' : 'Sin monto mensual'}</span><span></span></span>`;
   }
@@ -409,7 +412,8 @@ function envEditor(e, m) {
       <input class="input" style="width:40px;text-align:center;padding:0 4px" aria-label="Ícono" value="${esc(e.icon)}" ${envBind(e.id, 'icon', 'text')}>
       <div class="stack" style="flex:1;gap:8px;min-width:0">
         <input class="input" aria-label="Nombre del sobre" value="${esc(e.name)}" ${envBind(e.id, 'name', 'text')}>
-        ${auto ? `<div class="small ink-2">${autoText}${target ? `: <strong>${fmt(target)}</strong>/mes` : ''}</div>` : `<div class="row">${money(`aria-label="Monto mensual de ${esc(e.name)}" ${envBind(e.id, 'monthly')}`, e.monthly || '', '', 'cost')}<span class="small muted" style="white-space:nowrap">/ mes${isDual() && num(e.monthly) ? ` ${inBase(e.monthly)}` : ''}${e.shared && Math.abs(target - E.costToBase(state, e.monthly)) > 0.005 ? ` · tú: ${fmt(target)}` : ''}</span></div>`}
+        ${auto ? `<div class="small ink-2">${autoText}${target ? `: <strong>${fmt(target)}</strong>/mes` : ''}</div>` : `<div class="row">${money(`aria-label="Monto mensual de ${esc(e.name)}" ${envBind(e.id, 'monthly')}`, e.monthly || '', '', E.envCurrency(state, e))}${isDual() ? `<span class="popup" style="min-width:88px"><select class="input" aria-label="Moneda de ${esc(e.name)}" data-env-currency="${e.id}">${[costCode(), baseCode()].map((c) => `<option ${c === E.envCurrency(state, e) ? 'selected' : ''}>${c}</option>`).join('')}</select></span>` : ''}<span class="small muted" style="white-space:nowrap">/ mes${isDual() && num(e.monthly) && !envIsBase(e) ? ` ${inBase(e.monthly)}` : ''}${Math.abs(target - E.envToBase(state, e, e.monthly)) > 0.005 ? ` · tú: ${fmt(target)}` : ''}</span></div>`}
+        ${e.order ? `<div class="row" style="flex-wrap:wrap"><span class="small">Aporte fijo de tu pareja</span>${money(`aria-label="Aporte de tu pareja a ${esc(e.name)}" ${envBind(e.id, 'partnerAmount')}`, e.partnerAmount || '', '', E.envCurrency(state, e))}<button class="btn sm" data-action="go" data-view="pedido">Armar pedido…</button></div>` : ''}
         <div class="row" style="flex-wrap:wrap;gap:4px 16px">
           ${e.role ? '' : `<label class="check"><span class="small">Grupo</span><span class="popup"><select class="input" ${envBind(e.id, 'group', 'text')}>${GROUP_ORDER.filter((g) => g !== 'impuestos').map((g) => `<option value="${g}" ${g === e.group ? 'selected' : ''}>${E.GROUPS[g].label}</option>`).join('')}</select></span></label>`}
           ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.shared ? 'checked' : ''} ${envBind(e.id, 'shared', 'bool')}>Gasto del hogar</label>` : ''}
@@ -507,11 +511,94 @@ function purchase(it, people, index) {
   return p.everyWeeks > 1 ? `${text} <span class="muted">cada ${p.everyWeeks} semanas</span>` : text;
 }
 
+// ---------- Pedido familiar ----------
+// Un sobre con lista de productos habituales: cada mes se marcan los que se llevan, se suma el envío
+// y se registra el pedido como gasto (solo tu parte; el aporte fijo de tu pareja se descuenta).
+
+const orderEnvelope = () => state.envelopes.find((e) => e.order);
+
+function viewPedido() {
+  const env = orderEnvelope();
+  if (!env) {
+    return `<div class="page-head"><div><h1>Pedido familiar</h1><p>La compra mensual que envías a tu familia.</p></div></div>
+      <section class="card stack">
+        <h2>Crea tu pedido familiar</h2>
+        <p class="sub">Guarda los productos que más suele necesitar tu familia con su precio. Cada mes marcas qué llevar, la app suma el envío, te dice si cabe en el presupuesto y lo registra como gasto.</p>
+        <div><button class="btn primary" data-action="create-order">${sym('plus')} Crear pedido familiar</button></div>
+      </section>`;
+  }
+  const o = env.order;
+  const cur = E.envCurrency(state, env);
+  const r = E.orderSummary(env);
+  const m = ui.month;
+  const history = state.expenses.filter((x) => x.envId === env.id && x.order).sort((a, b) => b.date.localeCompare(a.date));
+  const lastThree = history.slice(0, 3);
+  const avg = lastThree.length ? lastThree.reduce((s, x) => s + num(x.order.total), 0) / lastThree.length : 0;
+  const status = !r.total ? null
+    : r.diff >= 0 ? { level: 'good', icon: 'checkmark.circle.fill', title: `Cabe en el presupuesto: sobran ${fmtIn(r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}.` }
+    : { level: 'warning', icon: 'exclamationmark.triangle.fill', title: `Te pasas por ${fmtIn(-r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}. Quita algún producto o mueve dinero de otro sobre.` };
+
+  return `<div class="page-head"><div><h1>Pedido familiar</h1><p>${esc(env.icon)} ${esc(env.name)}${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
+
+    <section class="card stack">
+      <h2>Presupuesto</h2>
+      <div class="form-grid">
+        <div class="field"><label for="o-budget">Presupuesto mensual del pedido</label>${money(`id="o-budget" ${envBind(env.id, 'monthly')}`, env.monthly || '', '', cur)}<span class="help">Lo que suelen gastar entre los dos, con envío.</span></div>
+        <div class="field"><label for="o-partner">Aporte fijo de tu pareja</label>${money(`id="o-partner" ${envBind(env.id, 'partnerAmount')}`, env.partnerAmount || '', '', cur)}<span class="help">Tu sobre solo aparta el resto.</span></div>
+        <div class="field"><label for="o-store">Página donde compran</label><input id="o-store" class="input" value="${esc(o.store || '')}" placeholder="Nombre de la tienda" data-order="store" data-k="o:store"></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="k">Tu parte al mes</div><div class="v">${fmt(E.monthlyTarget(state, env, m))}</div></div>
+        <div class="stat"><div class="k">Disponible en el sobre</div><div class="v">${fmt(E.envelopeBalance(state, env.id))}</div></div>
+      </div>
+    </section>
+
+    <section class="card stack">
+      <div class="row between"><h2>Productos habituales</h2><button class="btn sm" data-action="open" data-modal="producto">${sym('plus')} Agregar producto…</button></div>
+      <p class="sub">Marca lo que llevan este mes y ajusta las cantidades. Los precios se guardan para el siguiente pedido.</p>
+      ${o.items.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th></th><th>Producto</th><th class="r">Precio (${cur})</th><th class="r">Cantidad</th><th class="r">Subtotal</th><th></th></tr></thead>
+        <tbody>${o.items.map((it, i) => `<tr>
+          <td class="check-cell"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="Llevar ${esc(it.name)}" data-order-item="${i}" data-field="selected" data-k="oi:${i}:s"></td>
+          <td><input class="input" value="${esc(it.name)}" aria-label="Nombre del producto" data-order-item="${i}" data-field="name" data-k="oi:${i}:n"></td>
+          <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
+          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="numeric" min="0" step="1" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q"></td>
+          <td class="r num ${it.selected ? '' : 'muted'}">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
+          <td><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="row"><button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
+    </section>
+
+    <section class="card stack">
+      <h2>Este pedido</h2>
+      <div class="field" style="max-width:240px"><label for="o-ship">Envío</label>${money(`id="o-ship" data-order="shipping" data-k="o:ship"`, o.shipping || '', '', cur)}</div>
+      <div>
+        <div class="step-line"><span>Productos (${r.units} en ${r.items} ${r.items === 1 ? 'renglón' : 'renglones'})</span><span class="num">${fmtIn(r.products, cur)}</span></div>
+        <div class="step-line"><span>Envío</span><span class="num">${fmtIn(r.shipping, cur)}</span></div>
+        <div class="step-line"><strong>Total</strong><strong class="num">${fmtIn(r.total, cur)}</strong></div>
+        <div class="step-line"><span>Aporte de tu pareja</span><span class="num">−${fmtIn(r.partner, cur)}</span></div>
+        <div class="step-line"><strong>Tu parte</strong><strong class="num">${fmtIn(r.mine, cur)}</strong></div>
+      </div>
+      ${status ? `<div class="tipcard ${status.level}"><span class="ic">${sym(status.icon)}</span><div><strong>${status.title}</strong><p>${status.text}</p></div></div>` : ''}
+      ${r.missingPrices ? `<div class="tipcard info"><span class="ic">${sym('info.circle.fill')}</span><div><strong>${r.missingPrices} ${r.missingPrices === 1 ? 'producto marcado sin precio' : 'productos marcados sin precio'}</strong><p>No se suman al total hasta que les pongas precio.</p></div></div>` : ''}
+      <div><button class="btn primary" data-action="save-order" ${r.total > 0 ? '' : 'disabled'}>Registrar pedido…</button></div>
+    </section>
+
+    <section class="card stack">
+      <h2>Pedidos anteriores</h2>
+      ${history.length ? `<div>${history.slice(0, 12).map((x) => `<div class="mov"><div><strong>${dateLabel(x.date)}</strong><div class="meta">${x.order.units} productos · total ${fmtIn(x.order.total, x.order.currency || cur)}${x.order.partner ? ` · tu pareja ${fmtIn(x.order.partner, x.order.currency || cur)}` : ''}</div></div><div class="amt num">−${fmt(x.amount)}</div></div>`).join('')}</div>
+        <div class="row between" style="flex-wrap:wrap"><span class="small ink-2">${lastThree.length === 1 ? 'Último pedido' : `Promedio de los últimos ${lastThree.length} pedidos`}: <strong>${fmtIn(avg, cur)}</strong></span>${Math.abs(avg - num(env.monthly)) > 1 ? `<button class="btn sm" data-action="order-use-avg">Usar ${lastThree.length === 1 ? 'ese monto' : 'el promedio'} como presupuesto</button>` : ''}</div>`
+      : '<p class="muted">Cuando registres tu primer pedido aparecerá aquí.</p>'}
+    </section>`;
+}
+
 function viewMas() {
   const item = (view, ico, t, d) => `<button data-action="go" data-view="${view}"><span class="ico">${sym(ico)}</span><span><span class="t">${t}</span><br><span class="d">${d}</span></span><span class="chev">${sym('chevron.forward')}</span></button>`;
   return `<div class="page-head"><div><h1>Más</h1></div></div>
     <section class="card menu">
       ${item('hogar', 'person.2', 'Hogar en pareja', 'Reparto justo de los gastos de la casa')}
+      ${item('pedido', 'shippingbox', 'Pedido familiar', 'Arma la compra del mes para tu familia')}
       ${item('consejos', 'lightbulb', 'Recomendaciones', 'Todo lo que la app detecta en tu plan')}
       ${item('historial', 'clock.arrow.circlepath', 'Historial', 'Pagos recibidos y gastos')}
       ${item('ajustes', 'gearshape', 'Ajustes y respaldo', 'Impuestos, moneda, exportar datos')}
@@ -793,7 +880,7 @@ function modalHTML() {
       const e = envById(d.envId);
       const bal = e ? E.envelopeBalance(state, e.id) : 0;
       return `${head('Registrar gasto')}
-        <div class="field"><label for="d-amount">¿Cuánto gastaste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount', 'cost')}</div>
+        <div class="field"><label for="d-amount">¿Cuánto gastaste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount', e ? E.envCurrency(state, e) : 'cost')}</div>
         <div class="field"><label for="d-env">¿De qué sobre sale?</label><span class="popup"><select id="d-env" class="input" data-draft="envId">${envOptions(d.envId)}</select></span>
           <span class="help" id="exp-help">${expenseHelp()}</span></div>
         <div class="form-grid">${dateField}${noteField('Ej. súper semanal')}</div>
@@ -830,6 +917,7 @@ function modalHTML() {
         <div><h3 style="margin-bottom:4px">Últimos movimientos</h3><div class="group-box">${movs.length ? movs.map((x) => `<div class="mov"><div>${esc(x.label)}<div class="meta">${dateLabel(x.date)}</div></div><div class="amt num ${x.amt > 0 ? 'in' : ''}">${x.amt > 0 ? '+' : '−'}${fmt(Math.abs(x.amt))}</div></div>`).join('') : '<p class="muted small" style="padding:8px 12px">Aún no hay movimientos.</p>'}</div></div>
         <div class="sheet-foot">
           <button class="btn" data-action="open" data-modal="mover" data-from="${e.id}">Mover dinero…</button>
+          ${e.order ? '<button class="btn" data-action="go" data-view="pedido">Armar pedido…</button>' : ''}
           <span style="flex:1"></span>
           <button class="btn" data-action="open" data-modal="gasto" data-env="${e.id}">Registrar gasto…</button>
           <button class="btn primary" data-action="close">Listo</button>
@@ -844,6 +932,16 @@ function modalHTML() {
           <span class="help">Mínimo 8 caracteres. Si la olvidas, los datos sincronizados no se pueden recuperar (los de cada dispositivo siguen ahí).</span></div>
         <p id="sync-msg" class="small warn-ink" role="status"></p>
         ${foot('Conectar', 'save-sync')}`;
+    case 'producto': {
+      const env = orderEnvelope();
+      return `${head('Agregar producto')}
+        <div class="field"><label for="p-name">Producto</label><input id="p-name" class="input" data-draft="name" value="${esc(d.name)}" placeholder="Ej. Leche en polvo 1 kg"></div>
+        <div class="form-grid">
+          <div class="field"><label for="p-price">Precio</label>${money('id="p-price" data-draft="price"', d.price, '', env ? E.envCurrency(state, env) : 'base')}<span class="help">Puedes dejarlo vacío y ponerlo después.</span></div>
+          <div class="field"><label for="p-qty">Cantidad habitual</label><input id="p-qty" class="input" type="number" inputmode="numeric" min="1" step="1" data-draft="qty" value="${esc(d.qty)}"></div>
+        </div>
+        ${foot('Agregar', 'save-producto')}`;
+    }
     case 'alimento':
       return `${head(d.index != null ? 'Editar alimento' : 'Agregar alimento')}
         <p class="small ink-2">Copia los valores por 100 g de la etiqueta o de tu app de nutrición.</p>
@@ -871,6 +969,7 @@ function openModal(name, data = {}) {
   if (name === 'saldo') base.envId = 'emergencia';
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
+  if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
   if (name === 'alimento') {
     const existing = data.index != null ? state.food.items[Number(data.index)] : null;
     Object.assign(base, existing
@@ -895,9 +994,9 @@ function renderModal() {
 
 const NAV = [['inicio', 'house', 'Inicio'], ['metas', 'target', 'Metas'], ['plan', 'chart.pie', 'Plan'], ['comida', 'fork.knife', 'Comida'], ['mas', 'ellipsis.circle', 'Más']];
 // Títulos cortos para la barra de herramientas de macOS (HIG: menos de 15 caracteres).
-const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
+const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', pedido: 'Pedido familiar', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
 const MONTH_VIEWS = ['inicio', 'plan', 'historial', 'consejos'];
-const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, comida: viewComida, mas: viewMas, hogar: viewHogar, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
+const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, comida: viewComida, mas: viewMas, hogar: viewHogar, pedido: viewPedido, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
 
 function render() {
   const active = document.activeElement?.dataset?.k;
@@ -950,8 +1049,8 @@ function expenseHelp() {
   const e = envById(ui.draft.envId);
   if (!e) return '';
   const bal = E.envelopeBalance(state, e.id);
-  const spend = E.costToBase(state, num(ui.draft.amount));
-  const equiv = isDual() && num(ui.draft.amount) ? `= ${fmt(spend)} · ` : '';
+  const spend = E.envToBase(state, e, num(ui.draft.amount));
+  const equiv = isDual() && !envIsBase(e) && num(ui.draft.amount) ? `= ${fmt(spend)} · ` : '';
   return `${equiv}Disponible: ${fmt(bal)}${spend > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}`;
 }
 
@@ -1007,6 +1106,31 @@ document.addEventListener('change', (ev) => {
     touch('food');
     persist();
     scheduleRender();
+  } else if (el.dataset.orderItem != null || el.dataset.order) {
+    const env = orderEnvelope();
+    if (!env) return;
+    if (el.dataset.order) {
+      env.order[el.dataset.order] = el.dataset.order === 'store' ? el.value : num(el.value);
+    } else {
+      const it = env.order.items[Number(el.dataset.orderItem)];
+      const f = el.dataset.field;
+      it[f] = f === 'selected' ? el.checked : f === 'name' ? (el.value.trim() || it.name) : num(el.value);
+    }
+    env.updatedAt = Date.now();
+    persist();
+    scheduleRender();
+  } else if (el.dataset.envCurrency) {
+    // Cambiar la moneda de un sobre convierte su monto para conservar su valor.
+    const env = envById(el.dataset.envCurrency);
+    const before = E.envToBase(state, env, 1);
+    env.currency = el.value === costCode() ? undefined : el.value;
+    const factor = before / E.envToBase(state, env, 1);
+    const round = (n) => Math.round(num(n) * factor * 100) / 100;
+    env.monthly = round(env.monthly);
+    if (num(env.partnerAmount)) env.partnerAmount = round(env.partnerAmount);
+    env.updatedAt = Date.now();
+    persist();
+    scheduleRender();
   } else if (el.dataset.onbSaldo) {
     ui.onbSaldo[el.dataset.onbSaldo] = el.value;
   } else if (el.matches('[data-theme-pick]')) {
@@ -1050,8 +1174,9 @@ const ACTIONS = {
     const d = ui.draft; const amount = num(d.amount);
     if (amount <= 0) return toast('Escribe un monto mayor a 0');
     // Se guarda en la moneda de ingresos con el tipo de cambio del día, y el monto original para mostrarlo.
-    const expense = { id: E.uid(), date: d.date, envId: d.envId, amount: Math.round(E.costToBase(state, amount) * 100) / 100, note: d.note || '' };
-    if (isDual()) expense.original = { amount, currency: costCode(), rate: E.fxRate(state) };
+    const target = envById(d.envId);
+    const expense = { id: E.uid(), date: d.date, envId: d.envId, amount: Math.round(E.envToBase(state, target, amount) * 100) / 100, note: d.note || '' };
+    if (isDual() && !envIsBase(target)) expense.original = { amount, currency: E.envCurrency(state, target), rate: E.fxRate(state) };
     state.expenses.push(expense);
     closeModal(); commit('Gasto guardado ✓');
   },
@@ -1081,6 +1206,54 @@ const ACTIONS = {
     else state.food.items.push({ id: E.uid(), ...item });
     touch('food');
     closeModal(); commit(d.index != null ? 'Alimento actualizado ✓' : 'Alimento agregado ✓');
+  },
+  'create-order': () => {
+    state.envelopes.push({ id: E.uid(), name: 'Pedido familiar', icon: '📦', group: 'necesidad', monthly: 0, priority: 9, currency: baseCode(), partnerAmount: 0, order: { store: '', shipping: 0, items: [] }, updatedAt: Date.now() });
+    commit('Pedido familiar creado ✓');
+  },
+  'save-producto': () => {
+    const d = ui.draft;
+    const env = orderEnvelope();
+    if (!env || !d.name.trim()) return toast('Escribe el nombre del producto');
+    env.order.items.push({ id: E.uid(), name: d.name.trim(), price: num(d.price), qty: Math.max(1, Math.round(num(d.qty)) || 1), selected: true });
+    env.updatedAt = Date.now();
+    closeModal(); commit('Producto agregado ✓');
+  },
+  'del-order-item': (el) => {
+    const env = orderEnvelope();
+    env.order.items.splice(Number(el.dataset.i), 1);
+    env.updatedAt = Date.now();
+    commit();
+  },
+  'order-mark': (el) => {
+    const env = orderEnvelope();
+    for (const it of env.order.items) it.selected = el.dataset.v === '1';
+    env.updatedAt = Date.now();
+    commit();
+  },
+  'order-use-avg': () => {
+    const env = orderEnvelope();
+    const last = state.expenses.filter((x) => x.envId === env.id && x.order).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
+    if (!last.length) return;
+    env.monthly = Math.ceil(last.reduce((s, x) => s + num(x.order.total), 0) / last.length);
+    env.updatedAt = Date.now();
+    commit('Presupuesto actualizado al promedio');
+  },
+  'save-order': () => {
+    const env = orderEnvelope();
+    const r = E.orderSummary(env);
+    if (!r.total) return;
+    const cur = E.envCurrency(state, env);
+    if (!confirm(`¿Registrar el pedido de ${fmtIn(r.total, cur)}? Se anotará tu parte (${fmtIn(r.mine, cur)}) como gasto del sobre “${env.name}”.`)) return;
+    const expense = {
+      id: E.uid(), date: E.todayISO(), envId: env.id,
+      amount: Math.round(E.envToBase(state, env, r.mine) * 100) / 100,
+      note: `Pedido familiar (${r.units} productos)`,
+      order: { total: r.total, partner: r.partner, units: r.units, currency: cur, items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
+    };
+    if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
+    state.expenses.push(expense);
+    commit('Pedido registrado ✓');
   },
   'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
   'del-pay': (el) => {

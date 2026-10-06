@@ -170,10 +170,38 @@ export function goalTarget(state, env) {
 }
 
 // Convierte todos los costos guardados por un factor (al cambiar la moneda de gastos) para conservar su valor.
+// Un sobre puede tener su propia moneda (p. ej. un pedido que se paga en USD); si no, usa la moneda de gastos.
+export const envCurrency = (state, env) => env.currency || state.settings.costCurrency || state.settings.currency;
+export function envToBase(state, env, amount) {
+  return envCurrency(state, env) === state.settings.currency ? Number(amount) || 0 : costToBase(state, amount);
+}
+
+// Resumen del pedido de un sobre con lista de productos (en la moneda del sobre).
+export function orderSummary(env) {
+  const order = env.order || { items: [], shipping: 0 };
+  const chosen = (order.items || []).filter((it) => it.selected && Number(it.qty) > 0);
+  const products = chosen.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+  const shipping = chosen.length ? Number(order.shipping) || 0 : 0;
+  const total = Math.round((products + shipping) * 100) / 100;
+  const partner = Math.min(total, Number(env.partnerAmount) || 0);
+  const budget = Number(env.monthly) || 0;
+  return {
+    items: chosen.length,
+    units: chosen.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+    products, shipping, total, partner,
+    mine: Math.round((total - partner) * 100) / 100,
+    budget,
+    diff: Math.round((budget - total) * 100) / 100,
+    missingPrices: chosen.filter((it) => !(Number(it.price) > 0)).length,
+  };
+}
+
 export function convertCosts(state, factor) {
   const round = (n) => Math.round((Number(n) || 0) * factor * 100) / 100;
   const now = Date.now();
   for (const env of state.envelopes) {
+    if (env.currency) continue; // los sobres con moneda propia no cambian
+    if (isManualEnvelope(env) && Number(env.partnerAmount)) env.partnerAmount = round(env.partnerAmount);
     if (isManualEnvelope(env) && Number(env.monthly)) { env.monthly = round(env.monthly); env.updatedAt = now; }
     if (env.goal && Number(env.goal.target)) { env.goal.target = round(env.goal.target); env.updatedAt = now; }
   }
@@ -185,7 +213,8 @@ export function convertCosts(state, factor) {
 
 function baseMonthly(state, env, month) {
   if (env.role === 'comida' && state.food.linked) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
-  return costToBase(state, env.monthly);
+  // El aporte fijo de la pareja (si lo hay) se descuenta: el sobre solo aparta tu parte.
+  return envToBase(state, env, Math.max(0, (Number(env.monthly) || 0) - (Number(env.partnerAmount) || 0)));
 }
 
 export function needsMonthly(state, month) {
