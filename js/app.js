@@ -654,7 +654,7 @@ function viewHistorial() {
       const title = x.kind === 'saldo' ? 'Saldo inicial' : x.kind === 'transfer' ? 'Movimiento entre sobres' : esc(x.client || 'Pago');
       return `<div class="mov">
         <div><strong>${title}</strong><div class="meta">${dateLabel(x.date)}${x.note ? ` · ${esc(x.note)}` : ''}</div></div>
-        <div class="amt num ${E.isIncome(x) ? 'in' : ''}">+${fmt(x.amount)}<button class="icon-btn" data-action="del-pay" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
+        <div class="amt num ${E.isIncome(x) ? 'in' : ''}">+${fmt(x.amount)}${x.original ? `<span class="meta">${fmtIn(x.original.amount, x.original.currency)}</span>` : ''}<button class="icon-btn" data-action="del-pay" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
         <details><summary>Ver reparto</summary>${Object.entries(x.alloc).map(([id, v]) => { const e = envById(id); return `<div class="step-line"><span class="l">${e ? `${esc(e.icon)} ${esc(e.name)}` : 'Sobre eliminado'}</span><span class="num">${fmt(v)}</span></div>`; }).join('')}</details>
       </div>`;
     }
@@ -840,9 +840,21 @@ function viewOnb() {
 
 const STAGE_TITLES = { impuestos: '1 · Impuestos', primero: '2 · Págate primero', mes: '3 · Lo que necesita el mes', excedente: '4 · Excedente' };
 
+// Moneda del dinero que entra (pago o ahorro existente): la de ingresos o la de gastos, con su tipo de cambio.
+const draftBase = (d) => E.toBase(state, num(d.amount), d.currency, d.rate);
+function incomeCurrencyFields(d) {
+  if (!isDual()) return '';
+  const other = d.currency !== baseCode();
+  return `<div class="form-grid">
+      <div class="field"><label for="d-cur">Moneda</label><span class="popup"><select id="d-cur" class="input" data-draft="currency">${[baseCode(), costCode()].map((c) => `<option ${c === d.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+      ${other ? `<div class="field"><label for="d-rate">Tipo de cambio: 1 ${baseCode()} =</label><div class="money" data-sym="" data-code="${d.currency}"><input id="d-rate" class="input" type="number" inputmode="decimal" min="0.0001" step="0.01" value="${esc(d.rate)}" data-draft="rate"></div><span class="help" id="fx-equiv">${fxEquiv(d)}</span></div>` : ''}
+    </div>`;
+}
+const fxEquiv = (d) => (num(d.amount) ? `= ${fmt(draftBase(d))} para tus sobres` : 'Se convierte a la moneda de tus sobres.');
+
 function paymentPreview() {
   const d = ui.draft;
-  const amount = num(d.amount);
+  const amount = draftBase(d);
   if (amount <= 0) return '<p class="muted small">Escribe el monto para ver cómo se reparte.</p>';
   const r = E.allocate(state, amount, d.date);
   const byGroup = {};
@@ -868,7 +880,8 @@ function modalHTML() {
     case 'pago': {
       const clients = [...new Set(state.payments.filter(E.isIncome).map((p) => p.client).filter(Boolean))];
       return `${head('Recibí un pago')}
-        <div class="field"><label for="d-amount">¿Cuánto recibiste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-amount">¿Cuánto recibiste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount', d.currency)}</div>
+        ${incomeCurrencyFields(d)}
         <div class="form-grid">
           <div class="field"><label for="d-client">Cliente</label><input id="d-client" class="input" list="clients" value="${esc(d.client)}" data-draft="client" placeholder="Nombre del cliente"><datalist id="clients">${clients.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></div>
           ${dateField}
@@ -896,7 +909,8 @@ function modalHTML() {
     case 'saldo':
       return `${head('Registrar ahorro existente')}
         <p class="small ink-2">Registra dinero que ya tenías antes de usar la app. No cuenta como ingreso del mes.</p>
-        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount', d.currency)}</div>
+        ${incomeCurrencyFields(d)}
         <div class="field"><label for="d-env">Sobre</label><span class="popup"><select id="d-env" class="input" data-draft="envId">${envOptions(d.envId)}</select></span></div>
         ${foot('Guardar', 'save-saldo')}`;
     case 'sobre': {
@@ -967,6 +981,7 @@ function openModal(name, data = {}) {
   if (name === 'gasto') base.envId = data.env || 'comida';
   if (name === 'mover') { base.from = data.from || 'libre'; base.to = state.envelopes.find((e) => e.id !== base.from)?.id; }
   if (name === 'saldo') base.envId = 'emergencia';
+  if (name === 'pago' || name === 'saldo') Object.assign(base, { currency: baseCode(), rate: E.fxRate(state) === 1 ? state.settings.fxRate : E.fxRate(state) });
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
@@ -1138,6 +1153,9 @@ document.addEventListener('change', (ev) => {
   } else if (el.id === 'import-file' && el.files[0]) {
     importBackup(el.files[0]);
     el.value = '';
+  } else if (el.dataset.draft === 'currency') {
+    ui.draft.currency = el.value;
+    renderModal();
   } else if (el.dataset.draft && ui.modal === 'gasto' && el.dataset.draft === 'envId') {
     ui.draft.envId = el.value;
     renderModal();
@@ -1148,7 +1166,11 @@ document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (!el.dataset.draft) return;
   ui.draft[el.dataset.draft] = el.value;
-  if (ui.modal === 'pago' && (el.dataset.draft === 'amount' || el.dataset.draft === 'date')) {
+  if ((ui.modal === 'pago' || ui.modal === 'saldo') && ['amount', 'rate'].includes(el.dataset.draft)) {
+    const eq = document.getElementById('fx-equiv');
+    if (eq) eq.textContent = fxEquiv(ui.draft);
+  }
+  if (ui.modal === 'pago' && ['amount', 'date', 'rate'].includes(el.dataset.draft)) {
     document.getElementById('pay-preview').innerHTML = paymentPreview();
   }
   if (ui.modal === 'gasto' && el.dataset.draft === 'amount') {
@@ -1162,11 +1184,13 @@ const ACTIONS = {
   open: (el) => openModal(el.dataset.modal, el.dataset),
   close: closeModal,
   'save-pago': () => {
-    const d = ui.draft; const amount = num(d.amount);
+    const d = ui.draft; const amount = draftBase(d);
     if (amount <= 0) return toast('Escribe un monto mayor a 0');
     if (!d.date) return toast('Elige una fecha');
     const r = E.allocate(state, amount, d.date);
-    state.payments.push({ id: E.uid(), kind: 'pago', date: d.date, amount, client: (d.client || '').trim(), note: d.note || '', alloc: r.alloc });
+    const payment = { id: E.uid(), kind: 'pago', date: d.date, amount, client: (d.client || '').trim(), note: d.note || '', alloc: r.alloc };
+    if (d.currency !== baseCode()) payment.original = { amount: num(d.amount), currency: d.currency, rate: num(d.rate) };
+    state.payments.push(payment);
     ui.month = E.monthKey(d.date);
     closeModal(); commit(`Repartido ${fmt(amount)} ✓`);
   },
@@ -1190,9 +1214,11 @@ const ACTIONS = {
     closeModal(); commit('Dinero movido ✓');
   },
   'save-saldo': () => {
-    const d = ui.draft; const amount = num(d.amount);
+    const d = ui.draft; const amount = draftBase(d);
     if (amount <= 0) return toast('Escribe un monto mayor a 0');
-    state.payments.push({ id: E.uid(), kind: 'saldo', date: d.date, amount, client: '', note: 'Saldo inicial', alloc: { [d.envId]: amount } });
+    const saldo = { id: E.uid(), kind: 'saldo', date: d.date, amount, client: '', note: 'Saldo inicial', alloc: { [d.envId]: amount } };
+    if (d.currency !== baseCode()) saldo.original = { amount: num(d.amount), currency: d.currency, rate: num(d.rate) };
+    state.payments.push(saldo);
     closeModal(); commit('Saldo registrado ✓');
   },
   'save-alimento': () => {

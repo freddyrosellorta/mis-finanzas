@@ -160,6 +160,15 @@ export function fxRate(state) {
   return Number(s.fxRate) > 0 ? Number(s.fxRate) : 1;
 }
 export const costToBase = (state, amount) => (Number(amount) || 0) / fxRate(state);
+
+// Convierte dinero recibido en otra moneda a la de ingresos. `rate` = unidades de esa moneda por 1 de ingresos
+// (si no se indica, el tipo de cambio de Ajustes).
+export function toBase(state, amount, currency, rate) {
+  const n = Number(amount) || 0;
+  if (!currency || currency === state.settings.currency) return n;
+  const r = Number(rate) > 0 ? Number(rate) : fxRate(state);
+  return Math.round((n / r) * 100) / 100;
+}
 export const baseToCost = (state, amount) => (Number(amount) || 0) * fxRate(state);
 
 // Envelopes cuyo monto mensual se escribe a mano (los demás se calculan solos).
