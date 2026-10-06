@@ -377,6 +377,7 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .tipcard.warning .ic { color: var(--orange); }
 .tipcard.good .ic { color: var(--green); }
 .tipcard.info .ic { color: var(--accent); }
+.tipcard .fix { margin-top: 8px; }
 
 /* ---------- Macros ---------- */
 .macro { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }

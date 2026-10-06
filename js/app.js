@@ -210,9 +210,48 @@ function tipCards(recs) {
   return recs.map((r) => `
     <div class="tipcard ${r.level}">
       <span class="ic">${sym(LEVEL_ICON[r.level])}</span>
-      <div><strong><span class="sr-only">${{ critical: 'Urgente', warning: 'Atención', good: 'Bien', info: 'Dato' }[r.level]}: </span>${esc(r.title)}</strong><p>${esc(r.text)}</p></div>
+      <div><strong><span class="sr-only">${{ critical: 'Urgente', warning: 'Atención', good: 'Bien', info: 'Dato' }[r.level]}: </span>${esc(r.title)}</strong><p>${esc(r.text)}</p>
+        ${r.level !== 'good' && r.id && (E.FIXES[r.id] || NAV_FIXES[r.id]) ? `<div class="fix"><button class="btn sm" data-action="resolve" data-rec="${r.id}" data-title="${esc(r.title)}" data-env="${esc(r.data?.envId || '')}" data-missing="${esc(r.data?.missing || '')}" title="${E.FIXES[r.id] ? 'Corrige el plan según esta recomendación (te muestra los cambios antes de aplicarlos)' : 'Te lleva a donde puedes corregirlo'}">Resolver</button></div>` : ''}
+      </div>
     </div>`).join('');
 }
+
+// Recomendaciones que dependen de una decisión tuya: Resolver te lleva al lugar exacto para corregirlas.
+function goAndFocus(view, selector, message) {
+  ui.modal = null;
+  renderModal();
+  ui.view = view;
+  render();
+  const el = selector && $app.querySelector(selector);
+  if (el) { el.scrollIntoView({ block: 'center' }); el.focus({ preventScroll: true }); } else window.scrollTo(0, 0);
+  if (message) toast(message);
+}
+const NAV_FIXES = {
+  necesidades: () => goAndFocus('plan', '.group-title', 'Revisa los montos de tus necesidades: renta y transporte suelen ser los más grandes.'),
+  renta: (d) => goAndFocus('plan', `[data-k="e:${d.env}:monthly"]`, 'Para bajar este porcentaje hay que bajar la renta o subir tus ingresos.'),
+  'internet-caro': (d) => goAndFocus('plan', `[data-k="e:${d.env}:monthly"]`, 'Con Wi-Fi en casa puedes bajar el plan del móvil.'),
+  vence: (d) => {
+    // Mover dinero al sobre que vence, desde el sobre con más disponible que no sea una necesidad ni el fondo.
+    const sources = state.envelopes
+      .filter((e) => e.id !== d.env && e.group !== 'necesidad' && e.role !== 'emergencia' && e.role !== 'impuestos')
+      .map((e) => ({ e, bal: E.envelopeBalance(state, e.id) }))
+      .sort((a, b) => b.bal - a.bal);
+    const from = sources[0]?.bal > 0 ? sources[0].e.id : 'libre';
+    openModal('mover', { from, to: d.env, amount: Math.ceil(num(d.missing) * 100) / 100 });
+    if (!(sources[0]?.bal > 0)) toast('Ningún sobre de gustos o ahorro tiene dinero: el siguiente pago completará este sobre primero.');
+  },
+};
+// Si una corrección automática ya no tiene nada que cambiar, se lleva al ajuste correspondiente.
+const FIX_FALLBACK = {
+  ingreso: () => goAndFocus('ajustes', '#inc', 'Escribe cuánto recibes al mes en promedio.'),
+  fondo: () => goAndFocus('ajustes', '#pf', 'Págate primero ya está al máximo recomendado; el excedente de pagos grandes también va al fondo.'),
+  ahorro: () => goAndFocus('ajustes', '#pf'),
+  internet: (d) => goAndFocus('plan', `[data-k="e:${d.env}:monthly"]`, 'Revisa internet y plan móvil: juntos no deberían pasar del 3% de tu ingreso.'),
+  'plan-excede': () => goAndFocus('plan', '.group-title'),
+  cliente: () => goAndFocus('ajustes', '#efm', 'Tu fondo de emergencia ya apunta a 8 meses o más.'),
+  impuestos: () => goAndFocus('ajustes', '#tax'),
+  'hogar-desigual': () => goAndFocus('hogar'),
+};
 function sortedRecs() {
   return E.recommendations(state, ui.month, fmt).sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]);
 }
@@ -978,7 +1017,11 @@ function openModal(name, data = {}) {
   ui.modal = name;
   const base = { date: E.todayISO(), amount: '', note: '', client: '' };
   if (name === 'gasto') base.envId = data.env || 'comida';
-  if (name === 'mover') { base.from = data.from || 'libre'; base.to = state.envelopes.find((e) => e.id !== base.from)?.id; }
+  if (name === 'mover') {
+    base.from = data.from || 'libre';
+    base.to = data.to || state.envelopes.find((e) => e.id !== base.from)?.id;
+    if (data.amount) base.amount = data.amount;
+  }
   if (name === 'saldo') base.envId = 'emergencia';
   if (name === 'pago' || name === 'saldo') Object.assign(base, { currency: baseCode(), rate: E.fxRate(state) === 1 ? state.settings.fxRate : E.fxRate(state) });
   if (name === 'sobre') base.id = data.id;
@@ -1279,6 +1322,20 @@ const ACTIONS = {
     if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
     state.expenses.push(expense);
     commit('Pedido registrado ✓');
+  },
+  resolve: (el) => {
+    const id = el.dataset.rec;
+    const d = el.dataset;
+    if (NAV_FIXES[id]) return NAV_FIXES[id](d);
+    const fix = E.FIXES[id];
+    if (!fix) return;
+    const draft = structuredClone(state);
+    const changes = fix(draft, ui.month, fmt);
+    if (!changes) return (FIX_FALLBACK[id] || (() => toast('No hay nada que corregir automáticamente.')))(d);
+    if (!confirm(`Resolver: ${d.title}\n\n• ${changes.join('\n• ')}\n\n¿Aplicar estos cambios?`)) return;
+    state = draft;
+    for (const section of E.FIX_SECTIONS[id] || []) touch(section);
+    commit('Recomendación resuelta ✓');
   },
   'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
   'del-pay': (el) => {

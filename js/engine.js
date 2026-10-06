@@ -372,7 +372,8 @@ export function allocate(state, amount, date) {
 
 export function recommendations(state, month, fmt, today = new Date()) {
   const out = [];
-  const add = (level, title, text) => out.push({ level, title, text });
+  // `id` identifica la recomendación para su botón Resolver; `data` lleva lo que la corrección necesita.
+  const add = (level, title, text, id, data = {}) => out.push({ level, title, text, id, data });
   const income = referenceIncome(state, month);
   const plan = monthPlan(state, month);
   const needs = plan.byGroup.necesidad || 0;
@@ -380,7 +381,7 @@ export function recommendations(state, month, fmt, today = new Date()) {
   const env = (role) => findRole(state, role);
 
   if (income <= 0) {
-    add('warning', 'Falta tu ingreso estimado', 'Escribe en Ajustes cuánto recibes al mes en promedio para poder evaluar tu plan.');
+    add('warning', 'Falta tu ingreso estimado', 'Escribe en Ajustes cuánto recibes al mes en promedio para poder evaluar tu plan.', 'ingreso');
     return out;
   }
 
@@ -389,47 +390,50 @@ export function recommendations(state, month, fmt, today = new Date()) {
     const todayISO = `${month}-${String(today.getDate()).padStart(2, '0')}`;
     for (const e of state.envelopes.filter((x) => x.dueDay && isDueSoon(x, todayISO))) {
       const missing = monthlyTarget(state, e, month) - fundedInMonth(state, e.id, month);
-      if (missing > 0.005) add('critical', `${e.name}: faltan ${fmt(missing)}`, `Se paga el día ${e.dueDay}. Los próximos pagos que registres irán primero a este sobre hasta completarlo.`);
+      if (missing > 0.005) add('critical', `${e.name}: faltan ${fmt(missing)}`, `Se paga el día ${e.dueDay}. Los próximos pagos que registres irán primero a este sobre hasta completarlo.`, 'vence', { envId: e.id, missing });
     }
   }
 
   if (plan.total > income) {
-    add('critical', 'Tu plan supera tu ingreso', `El plan pide ${fmt(plan.total)} y tu ingreso de referencia es ${fmt(income)}. Alarga la fecha de las metas (Mac, iPhone) o baja gustos hasta que cuadre.`);
+    add('critical', 'Tu plan supera tu ingreso', `El plan pide ${fmt(plan.total)} y tu ingreso de referencia es ${fmt(income)}. Alarga la fecha de las metas (Mac, iPhone) o baja gustos hasta que cuadre.`, 'plan-excede');
   }
 
   const ef = env('emergencia');
   if (ef && needs > 0) {
     const months = envelopeBalance(state, ef.id) / needs;
-    if (months < 1) add('critical', 'Fondo de emergencia: prioridad #1', `Cubres ${months.toFixed(1)} meses de necesidades. Con ingresos de clientes (variables) la recomendación es 6 meses: ${fmt(needs * 6)}.`);
-    else if (months < 3) add('warning', 'Fondo de emergencia en construcción', `Llevas ${months.toFixed(1)} de 6 meses. Cuando llegues a 1 mes completo, empieza a vivir con el dinero del mes anterior: así un cliente que paga tarde no te afecta.`);
-    else if (months < 6) add('info', 'Buen colchón', `Tu fondo cubre ${months.toFixed(1)} meses. Sigue hasta 6.`);
+    const target = Number(s.emergencyMonths) || 6;
+    const pf = Number(s.payFirstPct) || 0;
+    const pfText = pf ? ` Hoy apartas el ${pf}% de cada pago para él.` : '';
+    if (months < 1) add('critical', 'Fondo de emergencia: prioridad #1', `Cubres ${months.toFixed(1)} meses de necesidades. Con ingresos de clientes (variables) la meta es ${target} meses: ${fmt(needs * target)}.${pfText}`, 'fondo');
+    else if (months < 3) add('warning', 'Fondo de emergencia en construcción', `Llevas ${months.toFixed(1)} de 6 meses. Cuando llegues a 1 mes completo, empieza a vivir con el dinero del mes anterior: así un cliente que paga tarde no te afecta.`, 'fondo');
+    else if (months < 6) add('info', 'Buen colchón', `Tu fondo cubre ${months.toFixed(1)} meses. Sigue hasta 6.`, 'fondo');
     else add('good', 'Fondo de emergencia completo', 'Lo que antes iba al fondo ahora se dirige a inversión a largo plazo (sobre "Inversión").');
   }
 
   const needsPct = needs / income;
-  if (needsPct > 0.6) add('critical', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'La guía 50/30/20 sugiere que las necesidades no pasen del 50%. Revisa renta y transporte, que suelen ser los más grandes.');
-  else if (needsPct > 0.5) add('warning', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'Un poco por encima del 50% recomendado. Es manejable si mantienes el ahorro en 20% o más.');
+  if (needsPct > 0.6) add('critical', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'La guía 50/30/20 sugiere que las necesidades no pasen del 50%. Revisa renta y transporte, que suelen ser los más grandes.', 'necesidades');
+  else if (needsPct > 0.5) add('warning', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'Un poco por encima del 50% recomendado. Es manejable si mantienes el ahorro en 20% o más.', 'necesidades');
   else add('good', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'Dentro del 50% recomendado por la regla 50/30/20.');
 
   const savingsPct = ((plan.byGroup.ahorro || 0) + income * (Number(s.payFirstPct) || 0) / 100) / income;
-  if (savingsPct < 0.2) add('warning', `Ahorro: ${Math.round(savingsPct * 100)}% del ingreso`, 'Apunta a ahorrar al menos 20% (fondo de emergencia, herramientas e inversión).');
+  if (savingsPct < 0.2) add('warning', `Ahorro: ${Math.round(savingsPct * 100)}% del ingreso`, 'Apunta a ahorrar al menos 20% (fondo de emergencia, herramientas e inversión).', 'ahorro');
 
   const rent = state.envelopes.find((e) => e.role === 'renta');
   if (rent) {
     const pct = monthlyTarget(state, rent, month) / income;
-    if (pct > 0.3) add('warning', `Renta: ${Math.round(pct * 100)}% del ingreso`, 'Lo recomendable es que la vivienda no pase del 30% de tus ingresos.');
+    if (pct > 0.3) add('warning', `Renta: ${Math.round(pct * 100)}% del ingreso`, 'Lo recomendable es que la vivienda no pase del 30% de tus ingresos.', 'renta', { envId: rent.id });
   }
 
-  if (!(Number(s.taxPct) > 0)) add('warning', 'No estás apartando impuestos', 'Como trabajas con clientes, aparta un porcentaje de cada pago para impuestos o cuotas de seguridad social. Consulta con un contador cuánto te corresponde y configúralo en Ajustes.');
+  if (!(Number(s.taxPct) > 0)) add('warning', 'No estás apartando impuestos', 'Como trabajas con clientes, aparta un porcentaje de cada pago para impuestos o cuotas de seguridad social. Consulta con un contador cuánto te corresponde y configúralo en Ajustes.', 'impuestos');
 
   const net = state.envelopes.find((e) => e.role === 'internet');
   const mobile = state.envelopes.find((e) => e.role === 'movil');
   if (net && net.pending) {
     const cap = income * 0.03;
-    add('info', 'Internet en casa: cómo elegir', `Presupuesto sano para internet (casa + móvil): hasta ${fmt(cap)} al mes (3% de tu ingreso). Prefiere fibra óptica y fíjate en la velocidad de subida (50 Mbps o más) porque subes contenido y haces videollamadas. Ahorra el monto desde ya en su sobre para cubrir la instalación. Cuando llegue el Wi-Fi, baja tu plan móvil a uno con menos datos.`);
+    add('info', 'Internet en casa: cómo elegir', `Presupuesto sano para internet (casa + móvil): hasta ${fmt(cap)} al mes (3% de tu ingreso). Prefiere fibra óptica y fíjate en la velocidad de subida (50 Mbps o más) porque subes contenido y haces videollamadas. Ahorra el monto desde ya en su sobre para cubrir la instalación. Cuando llegue el Wi-Fi, baja tu plan móvil a uno con menos datos.`, 'internet', { envId: net.id });
   } else if (net && mobile) {
     const total = monthlyTarget(state, net, month) + monthlyTarget(state, mobile, month);
-    if (total > income * 0.05) add('warning', 'Internet caro para tu ingreso', `Pagas ${fmt(total)} entre casa y móvil (más del 5%). Con Wi-Fi en casa, el plan móvil puede ser más pequeño.`);
+    if (total > income * 0.05) add('warning', 'Internet caro para tu ingreso', `Pagas ${fmt(total)} entre casa y móvil (más del 5%). Con Wi-Fi en casa, el plan móvil puede ser más pequeño.`, 'internet-caro', { envId: mobile.id });
   }
 
   // Concentración de clientes en los últimos 3 meses.
@@ -440,16 +444,130 @@ export function recommendations(state, month, fmt, today = new Date()) {
   const total = Object.values(byClient).reduce((a, b) => a + b, 0);
   const top = Object.entries(byClient).sort((a, b) => b[1] - a[1])[0];
   if (top && total > 0 && top[1] / total > 0.5 && Object.keys(byClient).length >= 1 && recent.length >= 2) {
-    add('warning', `${top[0]} es el ${Math.round(top[1] / total * 100)}% de tus ingresos`, 'Depender de un solo cliente es riesgoso. Mientras diversificas, refuerza el fondo de emergencia.');
+    const title = `${top[0]} es el ${Math.round(top[1] / total * 100)}% de tus ingresos`;
+    if ((Number(s.emergencyMonths) || 6) >= 8) add('info', title, `Ya reforzaste tu fondo de emergencia a ${s.emergencyMonths} meses. Conseguir más clientes es lo que reduce este riesgo.`);
+    else add('warning', title, 'Depender de un solo cliente es riesgoso. Mientras diversificas, refuerza el fondo de emergencia.', 'cliente');
   }
 
   const ps = partnerShare(state, month);
   const partnerName = state.partner.name || 'tu pareja';
   if (state.partner.mode === 'yo100') {
-    add('good', 'Hogar: cubres el 100%', `${partnerName} no carga con los gastos fijos. Recomiéndale guardar parte de su ingreso en su propio fondo de emergencia: su independencia también protege a la pareja.`);
+    add('good', 'Hogar: cubres el 100%', `${partnerName} no carga con los gastos fijos. Recomiéndale guardar parte de su ingreso en su propio fondo de emergencia: su independencia también protege a la pareja.`, 'hogar-ok');
   } else if (ps.herPctOfIncome > ps.myPctOfIncome + 0.001) {
-    add('warning', 'Reparto del hogar desigual', `${partnerName} aporta el ${Math.round(ps.herPctOfIncome * 100)}% de su ingreso y tú el ${Math.round(ps.myPctOfIncome * 100)}% del tuyo. Lo justo es que nadie aporte un porcentaje mayor que el otro.`);
+    add('warning', 'Reparto del hogar desigual', `${partnerName} aporta el ${Math.round(ps.herPctOfIncome * 100)}% de su ingreso y tú el ${Math.round(ps.myPctOfIncome * 100)}% del tuyo. Lo justo es que nadie aporte un porcentaje mayor que el otro.`, 'hogar-desigual');
   }
 
   return out;
 }
+
+// ---------- Correcciones automáticas (botón Resolver) ----------
+// Cada corrección modifica el estado que recibe (la interfaz le pasa una copia) y devuelve la lista
+// de cambios en palabras para confirmarlos, o null si no hay nada que se pueda corregir solo.
+
+const roundUp = (n) => Math.ceil(n * 100) / 100;
+
+// Monto en la moneda propia de un sobre a partir de uno en la moneda de ingresos.
+function baseToEnv(state, env, amount) {
+  return envCurrency(state, env) === state.settings.currency ? amount : baseToCost(state, amount);
+}
+
+export const FIXES = {
+  ingreso(state, month, fmt) {
+    const months = [0, 1, 2, 3, 4, 5].map((i) => incomeInMonth(state, addMonths(month, -i))).filter((v) => v > 0).slice(0, 3);
+    if (!months.length) return null;
+    const avg = Math.round(months.reduce((a, b) => a + b, 0) / months.length);
+    state.settings.incomeEstimate = avg;
+    return [`Ingreso mensual estimado: ${fmt(avg)} (promedio de tus últimos ${months.length} ${months.length === 1 ? 'mes' : 'meses'} con pagos).`];
+  },
+
+  'plan-excede'(state, month, fmt) {
+    const income = referenceIncome(state, month);
+    const over = () => monthPlan(state, month).total - income;
+    if (over() <= 0.005) return null;
+    const changes = [];
+    // 1. Alargar las metas con fecha (de la que más pide a la que menos), hasta 24 meses cada una.
+    const goals = state.envelopes.filter((e) => e.goal && Number(e.goal.target) > 0)
+      .sort((a, b) => monthlyTarget(state, b, month) - monthlyTarget(state, a, month));
+    for (const g of goals) {
+      const from = g.goal.date || addMonths(month, 11);
+      let added = 0;
+      while (over() > 0.005 && added < 24) { g.goal.date = addMonths(g.goal.date || from, 1); added++; }
+      if (added) { g.updatedAt = Date.now(); changes.push(`${g.name}: fecha de ${from} a ${g.goal.date}.`); }
+    }
+    // 2. Completar el fondo de emergencia más despacio (hasta 24 meses).
+    const horizon = Number(state.settings.emergencyHorizon) || 12;
+    let h = horizon;
+    while (over() > 0.005 && h < 24) { h++; state.settings.emergencyHorizon = h; }
+    if (h !== horizon) changes.push(`Fondo de emergencia: completarlo en ${h} meses en lugar de ${horizon}.`);
+    // 3. Recortar gustos en proporción.
+    if (over() > 0.005) {
+      const gustos = state.envelopes.filter((e) => e.group === 'gusto' && isManualEnvelope(e) && Number(e.monthly) > 0);
+      const totalBase = gustos.reduce((s, e) => s + monthlyTarget(state, e, month), 0);
+      const cut = Math.min(over(), totalBase);
+      for (const e of gustos) {
+        const share = cut * monthlyTarget(state, e, month) / totalBase;
+        const before = Number(e.monthly);
+        e.monthly = Math.max(0, Math.floor((before - baseToEnv(state, e, share)) * 100) / 100);
+        e.updatedAt = Date.now();
+        changes.push(`${e.name}: de ${before} a ${e.monthly} ${envCurrency(state, e)} al mes.`);
+      }
+    }
+    if (over() > 0.005) changes.push(`Aún faltan ${fmt(over())} al mes: revisa tus necesidades en Plan.`);
+    return changes.length ? changes : null;
+  },
+
+  fondo(state) {
+    const before = Number(state.settings.payFirstPct) || 0;
+    const next = Math.min(20, before + 5);
+    if (next <= before) return null;
+    state.settings.payFirstPct = next;
+    return [`Págate primero: de ${before}% a ${next}% de cada pago, directo al fondo de emergencia.`];
+  },
+
+  ahorro(state, month) {
+    const income = referenceIncome(state, month);
+    if (!(income > 0)) return null;
+    const plan = monthPlan(state, month);
+    const before = Number(state.settings.payFirstPct) || 0;
+    const needed = Math.ceil(((0.2 * income - (plan.byGroup.ahorro || 0)) / income) * 100);
+    const next = Math.min(30, Math.max(before, needed));
+    if (next <= before) return null;
+    state.settings.payFirstPct = next;
+    return [`Págate primero: de ${before}% a ${next}% de cada pago, para llegar a ahorrar el 20% de tu ingreso.`];
+  },
+
+  impuestos(state) {
+    if (Number(state.settings.taxPct) > 0) return null;
+    state.settings.taxPct = 10;
+    return ['Reserva para impuestos: 10% de cada pago (estimación prudente; confírmala con tu contador).'];
+  },
+
+  internet(state, month, fmt) {
+    const net = state.envelopes.find((e) => e.role === 'internet');
+    if (!net) return null;
+    const mobile = state.envelopes.find((e) => e.role === 'movil');
+    const cap = referenceIncome(state, month) * 0.03 - (mobile ? monthlyTarget(state, mobile, month) : 0);
+    const current = monthlyTarget(state, net, month);
+    if (cap <= 0 || (current > 0 && current <= cap + 0.005)) return null;
+    const before = Number(net.monthly) || 0;
+    net.monthly = roundUp(baseToEnv(state, net, cap));
+    net.updatedAt = Date.now();
+    return [`${net.name}: presupuesto de ${before} a ${net.monthly} ${envCurrency(state, net)} al mes (${fmt(cap)}), para que internet y móvil no pasen del 3% de tu ingreso. Se ahorra desde ya para la instalación.`];
+  },
+
+  cliente(state) {
+    const before = Number(state.settings.emergencyMonths) || 6;
+    if (before >= 8) return null;
+    state.settings.emergencyMonths = 8;
+    return [`Fondo de emergencia: meta de 8 meses de necesidades en lugar de ${before}, mientras dependas de un solo cliente.`];
+  },
+
+  'hogar-desigual'(state) {
+    if (state.partner.mode === 'proporcional') return null;
+    state.partner.mode = 'proporcional';
+    return ['Hogar en pareja: reparto proporcional al ingreso, para que cada uno aporte el mismo porcentaje de lo que gana.'];
+  },
+};
+
+// Secciones del estado que toca cada corrección (para la sincronización).
+export const FIX_SECTIONS = { ingreso: ['settings'], 'plan-excede': ['settings'], fondo: ['settings'], ahorro: ['settings'], impuestos: ['settings'], internet: [], cliente: ['settings'], 'hogar-desigual': ['partner'] };
