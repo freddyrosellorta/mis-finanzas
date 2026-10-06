@@ -1,6 +1,6 @@
 // Interfaz de la app. Dibuja vistas con plantillas y reacciona con delegación de eventos.
 import * as E from './engine.js';
-import { load, save, defaultState, migrate, exportFile, isNative, postNative, loadSyncConfig, saveSyncConfig } from './store.js';
+import { load, save, defaultState, migrate, exportFile, isNative, postNative, loadSyncConfig, saveSyncConfig, PRICE_UNITS } from './store.js';
 import * as Sync from './sync.js';
 
 let state = load();
@@ -470,16 +470,17 @@ function viewComida() {
 
     <section class="card stack">
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
-      <p class="sub">Pon los precios de tu súper. “Precio por” indica a cuánto corresponde el precio (1000 g = kg, 50 g = 1 huevo).</p>
+      <p class="sub">Elige cómo se vende cada producto y escribe su precio: por kg, por litro, por pieza (con su peso) o por paquete (con su contenido, p. ej. una bolsa de pan de 680 g).</p>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th>${t.people > 1 ? '<th class="r">Compra/día</th>' : ''}<th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
+        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th>${t.people > 1 ? '<th class="r">Compra/día</th>' : ''}<th>Se vende por</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Peso o contenido</th><th class="r">Costo/día</th><th></th></tr></thead>
         <tbody>${f.items.map((it, i) => `<tr>
           <td><div style="font-weight:600">${esc(it.name)}</div><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
           ${t.people > 1 ? `<td class="r num">${purchase(it, t.people)}</td>` : ''}
-          <td class="r"><input class="input num" style="width:80px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-food="${i}" data-field="price" data-k="f:${i}:p">${it.priceLabel ? `<div class="tiny muted">por ${esc(it.priceLabel)}</div>` : ''}</td>
-          <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="Gramos que corresponden al precio" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"></td>
-          <td class="r num">${num(it.price) ? fmtCost((num(it.grams) * t.people / num(it.priceGrams || 1000)) * num(it.price)) : '<span class="muted">—</span>'}</td>
+          <td><span class="popup" style="min-width:132px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
+          <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
+          <td class="r">${isWeighed(it) ? `<span class="muted">${UNIT_NAMES[it.priceUnit].fixed}</span>` : `<div class="row" style="justify-content:flex-end;gap:4px"><input class="input num" style="width:72px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="${it.priceUnit === 'pieza' ? 'Peso de una pieza' : 'Contenido del paquete'} en gramos o mililitros" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"><span class="tiny muted">g/ml</span></div>`}</td>
+          <td class="r num">${num(it.price) && num(it.priceGrams) ? fmtCost((num(it.grams) * t.people / num(it.priceGrams)) * num(it.price)) : '<span class="muted">—</span>'}</td>
           <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -487,16 +488,25 @@ function viewComida() {
     </section>`;
 }
 
-// Cantidad a comprar al día para todas las personas: en unidades si el precio es por pieza (huevo, lata…).
+// Cómo se vende cada alimento: por kg o litro (precio de 1000 g/ml), por pieza (con su peso) o por paquete (con su contenido).
+const UNIT_NAMES = {
+  kg: { por: 'por kg', fixed: '1 kg' },
+  litro: { por: 'por litro', fixed: '1 L' },
+  pieza: { por: 'por pieza', one: 'pieza', many: 'piezas' },
+  paquete: { por: 'por paquete', one: 'paquete', many: 'paquetes' },
+};
+const isWeighed = (it) => it.priceUnit === 'kg' || it.priceUnit === 'litro';
+
+// Cantidad a comprar al día para todas las personas, en la unidad en que se vende.
 function purchase(it, people) {
   const total = num(it.grams) * people;
-  const byUnit = it.priceLabel && !['kg', 'litro', 'frasco 300 g'].includes(it.priceLabel);
-  if (byUnit && num(it.priceGrams)) {
-    const units = Math.round((total / num(it.priceGrams)) * 10) / 10;
-    const names = { unidad: ['pieza', 'piezas'], lata: ['lata', 'latas'] }[it.priceLabel];
-    return names ? `${units} ${units === 1 ? names[0] : names[1]}` : `${units} × ${esc(it.priceLabel)}`;
-  }
-  return total >= 1000 ? `${Math.round(total / 10) / 100} ${it.priceLabel === 'litro' ? 'L' : 'kg'}` : `${Math.round(total)} ${it.priceLabel === 'litro' ? 'ml' : 'g'}`;
+  const liquid = it.priceUnit === 'litro';
+  const weight = total >= 1000 ? `${Math.round(total / 10) / 100} ${liquid ? 'L' : 'kg'}` : `${Math.round(total)} ${liquid ? 'ml' : 'g'}`;
+  if (isWeighed(it) || !num(it.priceGrams)) return weight;
+  const units = Math.round((total / num(it.priceGrams)) * 100) / 100;
+  const names = UNIT_NAMES[it.priceUnit];
+  const count = `${units} ${units === 1 ? names.one : names.many}`;
+  return it.priceUnit === 'pieza' ? count : `${weight} · ${count}`;
 }
 
 function viewMas() {
@@ -841,8 +851,13 @@ function modalHTML() {
         <p class="small ink-2">Copia los valores por 100 g de la etiqueta o de tu app de nutrición.</p>
         <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" data-draft="name" value="${esc(d.name)}"></div>
         <div class="form-grid">
-          ${[['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)'], ['grams', 'Gramos al día'], ['price', 'Precio'], ['priceGrams', 'Gramos de ese precio']]
+          ${[['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)'], ['grams', 'Gramos al día por persona']]
             .map(([k, l]) => `<div class="field"><label for="a-${k}">${l}</label><input id="a-${k}" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="${k}" value="${esc(d[k])}"></div>`).join('')}
+        </div>
+        <div class="form-grid">
+          <div class="field"><label for="a-unit">Se vende por</label><span class="popup"><select id="a-unit" class="input" data-draft="priceUnit">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === d.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></div>
+          <div class="field"><label for="a-price">Precio</label>${money('id="a-price" data-draft="price"', d.price, '', 'cost')}<span class="help">Puedes dejarlo vacío y ponerlo después.</span></div>
+          <div class="field"><label for="a-pg">Peso o contenido (g/ml)</label><input id="a-pg" class="input" type="number" inputmode="decimal" min="1" step="any" data-draft="priceGrams" value="${esc(d.priceGrams)}" placeholder="Solo por pieza o paquete"><span class="help">Peso de una pieza o contenido del paquete. Se ignora en kg y litro.</span></div>
         </div>
         ${foot('Agregar', 'save-alimento')}`;
     default:
@@ -858,7 +873,7 @@ function openModal(name, data = {}) {
   if (name === 'saldo') base.envId = 'emergencia';
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
-  if (name === 'alimento') Object.assign(base, { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceGrams: 1000 });
+  if (name === 'alimento') Object.assign(base, { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceUnit: 'kg', priceGrams: '' });
   ui.draft = base;
   renderModal();
   setTimeout(() => $modal.querySelector('[autofocus], input, select')?.focus(), 50);
@@ -969,7 +984,13 @@ document.addEventListener('change', (ev) => {
     persist();
     scheduleRender();
   } else if (el.dataset.food) {
-    state.food.items[Number(el.dataset.food)][el.dataset.field] = num(el.value);
+    const item = state.food.items[Number(el.dataset.food)];
+    if (el.dataset.field === 'priceUnit') {
+      item.priceUnit = el.value;
+      if (isWeighed(item)) item.priceGrams = 1000;
+    } else {
+      item[el.dataset.field] = num(el.value);
+    }
     touch('food');
     persist();
     scheduleRender();
@@ -1039,7 +1060,11 @@ const ACTIONS = {
   'save-alimento': () => {
     const d = ui.draft;
     if (!d.name.trim()) return toast('Escribe el nombre del alimento');
-    state.food.items.push({ id: E.uid(), name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceGrams: num(d.priceGrams) || 1000 });
+    const priceUnit = PRICE_UNITS.includes(d.priceUnit) ? d.priceUnit : 'kg';
+    const weighed = priceUnit === 'kg' || priceUnit === 'litro';
+    if (!weighed && !num(d.priceGrams)) return toast('Escribe el peso de la pieza o el contenido del paquete');
+    state.food.items.push({ id: E.uid(), name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : num(d.priceGrams) });
+    touch('food');
     closeModal(); commit('Alimento agregado ✓');
   },
   'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
