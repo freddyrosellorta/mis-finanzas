@@ -131,11 +131,43 @@ export function partnerShare(state, month) {
   };
 }
 
+// ---------- Monedas ----------
+// Los ingresos y saldos están en la moneda de ingresos (settings.currency, p. ej. USD).
+// Los costos (montos de sobres, precios de metas y alimentos) se capturan en la moneda de gastos
+// (settings.costCurrency, p. ej. MXN). fxRate = unidades de la moneda de gastos por 1 de ingresos.
+
+export function fxRate(state) {
+  const s = state.settings;
+  if (!s.costCurrency || s.costCurrency === s.currency) return 1;
+  return Number(s.fxRate) > 0 ? Number(s.fxRate) : 1;
+}
+export const costToBase = (state, amount) => (Number(amount) || 0) / fxRate(state);
+export const baseToCost = (state, amount) => (Number(amount) || 0) * fxRate(state);
+
+// Envelopes cuyo monto mensual se escribe a mano (los demás se calculan solos).
+export const isManualEnvelope = (env) => !env.goal && !['emergencia', 'inversion', 'libre', 'impuestos'].includes(env.role);
+
+export function goalTarget(state, env) {
+  return costToBase(state, env.goal?.target);
+}
+
+// Convierte todos los costos guardados por un factor (al cambiar la moneda de gastos) para conservar su valor.
+export function convertCosts(state, factor) {
+  const round = (n) => Math.round((Number(n) || 0) * factor * 100) / 100;
+  const now = Date.now();
+  for (const env of state.envelopes) {
+    if (isManualEnvelope(env) && Number(env.monthly)) { env.monthly = round(env.monthly); env.updatedAt = now; }
+    if (env.goal && Number(env.goal.target)) { env.goal.target = round(env.goal.target); env.updatedAt = now; }
+  }
+  for (const item of state.food.items) item.price = round(item.price);
+  state.food.extraMonthly = round(state.food.extraMonthly);
+}
+
 // ---------- Metas mensuales ----------
 
 function baseMonthly(state, env, month) {
-  if (env.role === 'comida' && state.food.linked) return Math.ceil(foodTotals(state.food).monthlyCost);
-  return Number(env.monthly) || 0;
+  if (env.role === 'comida' && state.food.linked) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
+  return costToBase(state, env.monthly);
 }
 
 export function needsMonthly(state, month) {
@@ -157,7 +189,7 @@ export function monthlyTarget(state, env, month) {
     return Math.ceil(remaining / (Number(state.settings.emergencyHorizon) || 12));
   }
   if (env.goal && Number(env.goal.target) > 0) {
-    const remaining = Number(env.goal.target) - envelopeBalance(state, env.id, month);
+    const remaining = goalTarget(state, env) - envelopeBalance(state, env.id, month);
     if (remaining <= 0) return 0;
     return Math.ceil(remaining / monthsBetween(month, env.goal.date || addMonths(month, 11)));
   }
@@ -231,7 +263,7 @@ export function allocate(state, amount, date) {
 
     const goals = state.envelopes
       .filter((e) => e.goal && Number(e.goal.target) > 0)
-      .map((e) => ({ env: e, missing: toCents(Number(e.goal.target) - envelopeBalance(state, e.id)) - (alloc[e.id] || 0) }))
+      .map((e) => ({ env: e, missing: toCents(goalTarget(state, e) - envelopeBalance(state, e.id)) - (alloc[e.id] || 0) }))
       .filter((g) => g.missing > 0);
     const goalsPart = Math.round(surplus * split.metas / 100);
     const missingTotal = goals.reduce((a, g) => a + g.missing, 0);

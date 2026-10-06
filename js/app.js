@@ -44,21 +44,30 @@ function sym(name, cls = '') {
   return `<span class="sym-fb ${cls}" aria-hidden="true">${SYMBOL_FALLBACK[name] || ''}</span>`;
 }
 
-function fmt(n) {
-  const v = Number(n) || 0;
-  const dec = Math.abs(v - Math.round(v)) < 0.005 ? 0 : 2;
+// Dos monedas: ingresos (settings.currency) y gastos (settings.costCurrency). Si difieren, cada monto lleva su código.
+const baseCode = () => state.settings.currency;
+const costCode = () => state.settings.costCurrency || state.settings.currency;
+const isDual = () => costCode() !== baseCode();
+
+function currencySymbol(code = baseCode()) {
   try {
-    return new Intl.NumberFormat('es-US', { style: 'currency', currency: state.settings.currency, currencyDisplay: 'narrowSymbol', minimumFractionDigits: dec, maximumFractionDigits: dec }).format(v);
-  } catch {
-    return `$${v.toFixed(dec)}`;
-  }
-}
-function currencySymbol() {
-  try {
-    return new Intl.NumberFormat('es-US', { style: 'currency', currency: state.settings.currency, currencyDisplay: 'narrowSymbol' })
+    return new Intl.NumberFormat('es-MX', { style: 'currency', currency: code, currencyDisplay: 'narrowSymbol' })
       .formatToParts(0).find((p) => p.type === 'currency').value;
   } catch { return '$'; }
 }
+function fmtIn(n, code) {
+  const v = Number(n) || 0;
+  const dec = Math.abs(v - Math.round(v)) < 0.005 ? 0 : 2;
+  const body = new Intl.NumberFormat('es-MX', { minimumFractionDigits: dec, maximumFractionDigits: dec }).format(Math.abs(v));
+  const sign = v < 0 ? '-' : '';
+  if (!isDual()) return `${sign}${currencySymbol(code)}${body}`;
+  return code === 'USD' ? `${sign}US$${body}` : `${sign}${currencySymbol(code)}${body} ${code}`;
+}
+// Moneda de ingresos (saldos, pagos, reparto) y moneda de gastos (costos de productos y servicios).
+const fmt = (n) => fmtIn(n, baseCode());
+const fmtCost = (n) => fmtIn(n, costCode());
+// Equivalente en la moneda de ingresos de un costo, solo si hay dos monedas.
+const inBase = (costAmount) => (isDual() ? `≈ ${fmt(E.costToBase(state, costAmount))}` : '');
 function monthLabel(m) {
   const [y, mo] = m.split('-').map(Number);
   const label = new Date(y, mo - 1, 1).toLocaleDateString('es', { month: 'long', year: 'numeric' });
@@ -162,8 +171,11 @@ function refreshSyncStatus() {
 
 // ---------- Piezas reutilizables ----------
 
-const money = (attrs, value, cls = '') =>
-  `<div class="money ${cls}" data-sym="${esc(currencySymbol())}"><input class="input ${cls.includes('amount') ? 'amount' : ''}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0" value="${value === '' || value == null ? '' : esc(value)}" ${attrs}></div>`;
+// `kind`: 'base' (ingresos, USD) o 'cost' (gastos, p. ej. MXN). Con dos monedas el campo muestra su código.
+const money = (attrs, value, cls = '', kind = 'base') => {
+  const code = kind === 'cost' ? costCode() : baseCode();
+  return `<div class="money ${cls}" data-sym="${esc(currencySymbol(code))}"${isDual() ? ` data-code="${code}"` : ''}><input class="input ${cls.includes('amount') ? 'amount' : ''}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0" value="${value === '' || value == null ? '' : esc(value)}" ${attrs}></div>`;
+};
 const percent = (attrs, value) =>
   `<div class="money pct"><input class="input" type="number" inputmode="decimal" min="0" max="100" step="1" value="${esc(value)}" ${attrs}></div>`;
 
@@ -264,11 +276,12 @@ function envRow(e, m) {
   const funded = E.fundedInMonth(state, e.id, m);
   let detail;
   if (e.goal && num(e.goal.target) > 0) {
-    detail = `${meter(bal / num(e.goal.target), { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Meta ${fmt(e.goal.target)}</span><span>${pct(bal / num(e.goal.target))}</span></span>`;
+    const goal = E.goalTarget(state, e);
+    detail = `${meter(bal / goal, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Meta ${fmtCost(e.goal.target)}${isDual() ? ` (${fmt(goal)})` : ''}</span><span>${pct(bal / goal)}</span></span>`;
   } else if (e.role === 'impuestos') {
     detail = `<span class="tiny"><span>${state.settings.taxPct}% de cada pago</span><span>Este mes ${fmt(funded)}</span></span>`;
   } else if (target > 0) {
-    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
+    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}${isDual() && E.isManualEnvelope(e) && num(e.monthly) ? ` · ${fmtCost(e.monthly)}` : ''}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
   } else {
     detail = `<span class="tiny"><span>${e.role === 'libre' ? 'Recibe parte del excedente' : e.role === 'inversion' ? 'Recibe el excedente cuando el fondo está completo' : 'Sin monto mensual'}</span><span></span></span>`;
   }
@@ -299,15 +312,15 @@ function viewMetas() {
 
   const goalCard = (e) => {
     const bal = E.envelopeBalance(state, e.id);
-    const target = num(e.goal.target);
+    const target = E.goalTarget(state, e);
     const monthly = E.monthlyTarget(state, e, m);
     const left = E.monthsBetween(m, e.goal.date || m);
     return `<section class="card stack">
       <div class="row between"><h2>${esc(e.icon)} ${esc(e.name)}</h2><button class="icon-btn" data-action="del-env" data-id="${e.id}" aria-label="Eliminar meta" title="Eliminar meta">${sym('trash')}</button></div>
-      <div class="row between"><span class="num" style="font-size:1.5rem;font-weight:700">${fmt(bal)}</span><span class="muted">de ${fmt(target)}</span></div>
+      <div class="row between"><span class="num" style="font-size:1.5rem;font-weight:700">${fmt(bal)}</span><span class="muted">de ${fmt(target)}${isDual() && target ? ` (${fmtCost(e.goal.target)})` : ''}</span></div>
       ${meter(target ? bal / target : 0, { color: `var(--g-${e.group})` })}
       <div class="form-grid">
-        <div class="field"><label for="gt-${e.id}">Precio / meta</label>${money(`id="gt-${e.id}" ${envBind(e.id, 'goal.target')}`, e.goal.target || '')}</div>
+        <div class="field"><label for="gt-${e.id}">Precio / meta</label>${money(`id="gt-${e.id}" ${envBind(e.id, 'goal.target')}`, e.goal.target || '', '', 'cost')}${isDual() && target ? `<span class="help">${inBase(e.goal.target)}</span>` : ''}</div>
         <div class="field"><label for="gd-${e.id}">Lo quiero para</label><input class="input" type="month" id="gd-${e.id}" value="${esc(e.goal.date)}" ${envBind(e.id, 'goal.date', 'text')}></div>
       </div>
       <p class="small ink-2">${target <= 0 ? 'Escribe el precio para calcular cuánto apartar.' : bal >= target ? '¡Meta lograda! Ya puedes comprarlo sin deudas. 🎉' : `Aparta <strong>${fmt(monthly)}</strong> al mes durante ${left} ${left === 1 ? 'mes' : 'meses'}. El excedente de pagos grandes la adelanta.`}</p>
@@ -396,7 +409,7 @@ function envEditor(e, m) {
       <input class="input" style="width:40px;text-align:center;padding:0 4px" aria-label="Ícono" value="${esc(e.icon)}" ${envBind(e.id, 'icon', 'text')}>
       <div class="stack" style="flex:1;gap:8px;min-width:0">
         <input class="input" aria-label="Nombre del sobre" value="${esc(e.name)}" ${envBind(e.id, 'name', 'text')}>
-        ${auto ? `<div class="small ink-2">${autoText}${target ? `: <strong>${fmt(target)}</strong>/mes` : ''}</div>` : `<div class="row">${money(`aria-label="Monto mensual de ${esc(e.name)}" ${envBind(e.id, 'monthly')}`, e.monthly || '')}<span class="small muted" style="white-space:nowrap">/ mes${e.shared && target !== num(e.monthly) ? ` · tú: ${fmt(target)}` : ''}</span></div>`}
+        ${auto ? `<div class="small ink-2">${autoText}${target ? `: <strong>${fmt(target)}</strong>/mes` : ''}</div>` : `<div class="row">${money(`aria-label="Monto mensual de ${esc(e.name)}" ${envBind(e.id, 'monthly')}`, e.monthly || '', '', 'cost')}<span class="small muted" style="white-space:nowrap">/ mes${isDual() && num(e.monthly) ? ` ${inBase(e.monthly)}` : ''}${e.shared && Math.abs(target - E.costToBase(state, e.monthly)) > 0.005 ? ` · tú: ${fmt(target)}` : ''}</span></div>`}
         <div class="row" style="flex-wrap:wrap;gap:4px 16px">
           ${e.role ? '' : `<label class="check"><span class="small">Grupo</span><span class="popup"><select class="input" ${envBind(e.id, 'group', 'text')}>${GROUP_ORDER.filter((g) => g !== 'impuestos').map((g) => `<option value="${g}" ${g === e.group ? 'selected' : ''}>${E.GROUPS[g].label}</option>`).join('')}</select></span></label>`}
           ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.shared ? 'checked' : ''} ${envBind(e.id, 'shared', 'bool')}>Gasto del hogar</label>` : ''}
@@ -440,28 +453,28 @@ function viewComida() {
     <section class="card stack">
       <h2>Costo</h2>
       <div class="stats">
-        <div class="stat"><div class="k">Por día</div><div class="v">${fmt(t.dailyCost)}</div></div>
-        <div class="stat"><div class="k">Al mes</div><div class="v">${fmt(t.monthlyCost)}</div></div>
+        <div class="stat"><div class="k">Por día</div><div class="v">${fmtCost(t.dailyCost)}</div>${isDual() ? `<div class="k">${inBase(t.dailyCost)}</div>` : ''}</div>
+        <div class="stat"><div class="k">Al mes</div><div class="v">${fmtCost(t.monthlyCost)}</div>${isDual() ? `<div class="k">${inBase(t.monthlyCost)}</div>` : ''}</div>
       </div>
       <div class="form-grid">
         <div class="field"><label for="waste">Margen por merma</label>${percent(`id="waste" ${bind('food.wastePct')}`, f.wastePct)}<span class="help">Comida que se daña o sobra. 10% es razonable.</span></div>
-        <div class="field"><label for="extra">Extras al mes</label>${money(`id="extra" ${bind('food.extraMonthly')}`, f.extraMonthly)}<span class="help">Condimentos, café, salsas.</span></div>
+        <div class="field"><label for="extra">Extras al mes</label>${money(`id="extra" ${bind('food.extraMonthly')}`, f.extraMonthly, '', 'cost')}<span class="help">Condimentos, café, salsas.</span></div>
       </div>
       <label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>
-      ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmt(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
+      ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmtCost(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
     </section>
 
     <section class="card stack">
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
       <p class="sub">Pon los precios de tu súper. “Precio por” indica a cuánto corresponde el precio (1000 g = kg, 50 g = 1 huevo).</p>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Alimento</th><th class="r">g/día</th><th class="r">Precio</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
+        <thead><tr><th>Alimento</th><th class="r">g/día</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
         <tbody>${f.items.map((it, i) => `<tr>
           <td><div style="font-weight:600">${esc(it.name)}</div><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
           <td class="r"><input class="input num" style="width:80px" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(it.price)}" aria-label="Precio de ${esc(it.name)}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="Gramos que corresponden al precio" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"></td>
-          <td class="r num">${fmt((num(it.grams) / num(it.priceGrams || 1000)) * num(it.price))}</td>
+          <td class="r num">${fmtCost((num(it.grams) / num(it.priceGrams || 1000)) * num(it.price))}</td>
           <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -536,7 +549,7 @@ function viewHistorial() {
     const e = envById(x.envId);
     return `<div class="mov">
       <div><strong>${e ? `${esc(e.icon)} ${esc(e.name)}` : 'Sobre eliminado'}</strong><div class="meta">${dateLabel(x.date)}${x.note ? ` · ${esc(x.note)}` : ''}</div></div>
-      <div class="amt num">−${fmt(x.amount)}<button class="icon-btn" data-action="del-exp" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
+      <div class="amt num">−${fmt(x.amount)}${x.original ? `<span class="meta">${fmtIn(x.original.amount, x.original.currency)}</span>` : ''}<button class="icon-btn" data-action="del-exp" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
     </div>`;
   };
 
@@ -561,7 +574,9 @@ function viewAjustes() {
       <h2>Ingresos e impuestos</h2>
       <div class="form-grid">
         <div class="field"><label for="name">Tu nombre</label><input id="name" class="input" value="${esc(s.name || '')}" ${bind('settings.name', 'text')}></div>
-        <div class="field"><label for="cur">Moneda</label><span class="popup"><select id="cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+        <div class="field"><label for="cur">Moneda de tus ingresos</label><span class="popup"><select id="cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+        <div class="field"><label for="cost-cur">Moneda de tus gastos</label><span class="popup"><select id="cost-cur" class="input" ${bind('settings.costCurrency', 'text')}>${CURRENCIES.map((c) => `<option ${c === costCode() ? 'selected' : ''}>${c}</option>`).join('')}</select></span><span class="help">En la que pagas renta, súper y servicios.</span></div>
+        ${isDual() ? `<div class="field"><label for="fx">Tipo de cambio: 1 ${baseCode()} =</label><div class="money" data-sym="" data-code="${costCode()}"><input id="fx" class="input" type="number" inputmode="decimal" min="0.0001" step="0.01" value="${esc(s.fxRate)}" ${bind('settings.fxRate')}></div><span class="help">Cambiarlo no altera tus montos en ${costCode()}; solo su equivalente en ${baseCode()}.</span></div>` : ''}
         <div class="field"><label for="inc">Ingreso mensual promedio</label>${money(`id="inc" ${bind('settings.incomeEstimate')}`, s.incomeEstimate || '')}<span class="help">Se usa hasta que tengas 1 mes de historial. Sé conservador.</span></div>
         <div class="field"><label for="tax">Reserva para impuestos</label>${percent(`id="tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pregunta a un contador qué te corresponde como trabajador independiente.</span></div>
         <div class="field"><label for="pf">Págate primero</label>${percent(`id="pf" ${bind('settings.payFirstPct')}`, s.payFirstPct)}<span class="help">Va al ahorro antes que cualquier gasto. 10% mínimo.</span></div>
@@ -651,7 +666,7 @@ function viewOnb() {
   const s = state.settings;
   const env = (id) => envById(id) || {};
   const step = ui.onbStep;
-  const field = (id, label, help = '') => `<div class="field"><label for="o-${id}">${label}</label>${money(`id="o-${id}" ${envBind(id, 'monthly')}`, env(id).monthly || '')}${help ? `<span class="help">${help}</span>` : ''}</div>`;
+  const field = (id, label, help = '') => `<div class="field"><label for="o-${id}">${label}</label>${money(`id="o-${id}" ${envBind(id, 'monthly')}`, env(id).monthly || '', '', 'cost')}${help ? `<span class="help">${help}</span>` : ''}</div>`;
   const steps = [
     `<h1>Te damos la bienvenida</h1>
      <p class="lead">Vamos a armar tu plan en 4 pasos. Cada vez que un cliente te pague, la app te dirá exactamente a dónde va cada peso.</p>
@@ -659,7 +674,9 @@ function viewOnb() {
      <div class="pill-list"><span>Reparto automático</span><span>Fondo de emergencia</span><span>Mac e iPhone</span><span>Súper según tu dieta</span><span>Hogar justo</span></div>
      <div class="form-grid">
        <div class="field"><label for="o-name">¿Cómo te llamas?</label><input id="o-name" class="input" value="${esc(s.name || '')}" ${bind('settings.name', 'text')}></div>
-       <div class="field"><label for="o-cur">Moneda</label><span class="popup"><select id="o-cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+       <div class="field"><label for="o-cur">Moneda de tus ingresos</label><span class="popup"><select id="o-cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+       <div class="field"><label for="o-cost-cur">Moneda de tus gastos</label><span class="popup"><select id="o-cost-cur" class="input" ${bind('settings.costCurrency', 'text')}>${CURRENCIES.map((c) => `<option ${c === costCode() ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+       ${isDual() ? `<div class="field"><label for="o-fx">Tipo de cambio: 1 ${baseCode()} =</label><div class="money" data-sym="" data-code="${costCode()}"><input id="o-fx" class="input" type="number" inputmode="decimal" min="0.0001" step="0.01" value="${esc(s.fxRate)}" ${bind('settings.fxRate')}></div></div>` : ''}
        <div class="field"><label for="o-inc">Ingreso mensual promedio</label>${money(`id="o-inc" ${bind('settings.incomeEstimate')}`, s.incomeEstimate || '')}<span class="help">Usa un mes normal, no el mejor.</span></div>
        <div class="field"><label for="o-tax">Reserva para impuestos</label>${percent(`id="o-tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pon 0 si no aplica en tu país.</span></div>
      </div>`,
@@ -674,9 +691,9 @@ function viewOnb() {
     `<h1>Metas e imagen</h1>
      <p class="lead">Tus herramientas de trabajo y tu imagen. Pon el precio y para cuándo lo quieres.</p>
      <div class="form-grid">
-       <div class="field"><label for="o-mac">💻 Precio de la Mac</label>${money(`id="o-mac" ${envBind('mac', 'goal.target')}`, env('mac').goal?.target || '')}</div>
+       <div class="field"><label for="o-mac">💻 Precio de la Mac</label>${money(`id="o-mac" ${envBind('mac', 'goal.target')}`, env('mac').goal?.target || '', '', 'cost')}</div>
        <div class="field"><label for="o-macd">Para</label><input id="o-macd" class="input" type="month" value="${esc(env('mac').goal?.date)}" ${envBind('mac', 'goal.date', 'text')}></div>
-       <div class="field"><label for="o-iph">📲 Precio del iPhone</label>${money(`id="o-iph" ${envBind('iphone', 'goal.target')}`, env('iphone').goal?.target || '')}</div>
+       <div class="field"><label for="o-iph">📲 Precio del iPhone</label>${money(`id="o-iph" ${envBind('iphone', 'goal.target')}`, env('iphone').goal?.target || '', '', 'cost')}</div>
        <div class="field"><label for="o-iphd">Para</label><input id="o-iphd" class="input" type="month" value="${esc(env('iphone').goal?.date)}" ${envBind('iphone', 'goal.date', 'text')}></div>
        ${field('ropa', '👔 Ropa y accesorios al mes', 'Sugerido 5–10% de tu ingreso; compra pocas piezas versátiles y de calidad.')}
        ${field('cuidado', '💈 Cuidado personal al mes')}
@@ -751,9 +768,9 @@ function modalHTML() {
       const e = envById(d.envId);
       const bal = e ? E.envelopeBalance(state, e.id) : 0;
       return `${head('Registrar gasto')}
-        <div class="field"><label for="d-amount">¿Cuánto gastaste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-amount">¿Cuánto gastaste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount', 'cost')}</div>
         <div class="field"><label for="d-env">¿De qué sobre sale?</label><span class="popup"><select id="d-env" class="input" data-draft="envId">${envOptions(d.envId)}</select></span>
-          <span class="help" id="exp-help">${e ? `Disponible: ${fmt(bal)}${num(d.amount) > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}` : ''}</span></div>
+          <span class="help" id="exp-help">${expenseHelp()}</span></div>
         <div class="form-grid">${dateField}${noteField('Ej. súper semanal')}</div>
         ${foot('Guardar gasto', 'save-gasto')}`;
     }
@@ -776,7 +793,7 @@ function modalHTML() {
       const m = ui.month;
       const movs = [
         ...state.payments.filter((p) => p.alloc[e.id]).map((p) => ({ date: p.date, amt: p.alloc[e.id], label: p.kind === 'saldo' ? 'Saldo inicial' : p.kind === 'transfer' ? 'Movimiento' : (p.client || 'Pago') })),
-        ...state.expenses.filter((x) => x.envId === e.id).map((x) => ({ date: x.date, amt: -num(x.amount), label: x.note || 'Gasto' })),
+        ...state.expenses.filter((x) => x.envId === e.id).map((x) => ({ date: x.date, amt: -num(x.amount), label: `${x.note || 'Gasto'}${x.original ? ` · ${fmtIn(x.original.amount, x.original.currency)}` : ''}` })),
       ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12);
       return `${head(`${esc(e.icon)} ${esc(e.name)}`)}
         <div class="stats">
@@ -876,6 +893,33 @@ function render() {
 
 // ---------- Eventos ----------
 
+// Al cambiar la moneda de gastos se convierten los costos guardados para que conserven su valor real.
+function changeCostCurrency(el) {
+  const previous = costCode();
+  const oldRate = E.fxRate(state);
+  state.settings.costCurrency = el.value;
+  const factor = E.fxRate(state) / oldRate;
+  if (factor !== 1 && !confirm(`Tus montos de sobres, metas y alimentos se convertirán de ${previous} a ${el.value} (1 ${baseCode()} = ${E.fxRate(state) === 1 ? oldRate : E.fxRate(state)} ${E.fxRate(state) === 1 ? previous : el.value}) para que conserven su valor. Revisa el tipo de cambio antes de continuar. ¿Convertir?`)) {
+    state.settings.costCurrency = previous;
+    render();
+    return;
+  }
+  if (factor !== 1) { E.convertCosts(state, factor); touch('food'); }
+  touch('settings');
+  persist();
+  render();
+  if (factor !== 1) toast(`Costos convertidos a ${el.value}`);
+}
+
+function expenseHelp() {
+  const e = envById(ui.draft.envId);
+  if (!e) return '';
+  const bal = E.envelopeBalance(state, e.id);
+  const spend = E.costToBase(state, num(ui.draft.amount));
+  const equiv = isDual() && num(ui.draft.amount) ? `= ${fmt(spend)} · ` : '';
+  return `${equiv}Disponible: ${fmt(bal)}${spend > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}`;
+}
+
 function setPath(obj, path, value) {
   const keys = path.split('.');
   let o = obj;
@@ -891,6 +935,8 @@ function readValue(el) {
 document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (el.dataset.bind) {
+    if (el.dataset.bind === 'settings.costCurrency') return changeCostCurrency(el);
+    if (el.dataset.bind === 'settings.currency' && costCode() === baseCode()) state.settings.costCurrency = el.value;
     setPath(state, el.dataset.bind, readValue(el));
     const section = el.dataset.bind.split('.')[0];
     if (['settings', 'partner', 'food'].includes(section)) touch(section);
@@ -931,9 +977,7 @@ document.addEventListener('input', (ev) => {
     document.getElementById('pay-preview').innerHTML = paymentPreview();
   }
   if (ui.modal === 'gasto' && el.dataset.draft === 'amount') {
-    const e = envById(ui.draft.envId);
-    const bal = e ? E.envelopeBalance(state, e.id) : 0;
-    document.getElementById('exp-help').textContent = `Disponible: ${fmt(bal)}${num(el.value) > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}`;
+    document.getElementById('exp-help').textContent = expenseHelp();
   }
 });
 
@@ -954,7 +998,10 @@ const ACTIONS = {
   'save-gasto': () => {
     const d = ui.draft; const amount = num(d.amount);
     if (amount <= 0) return toast('Escribe un monto mayor a 0');
-    state.expenses.push({ id: E.uid(), date: d.date, envId: d.envId, amount, note: d.note || '' });
+    // Se guarda en la moneda de ingresos con el tipo de cambio del día, y el monto original para mostrarlo.
+    const expense = { id: E.uid(), date: d.date, envId: d.envId, amount: Math.round(E.costToBase(state, amount) * 100) / 100, note: d.note || '' };
+    if (isDual()) expense.original = { amount, currency: costCode(), rate: E.fxRate(state) };
+    state.expenses.push(expense);
     closeModal(); commit('Gasto guardado ✓');
   },
   'save-mover': () => {

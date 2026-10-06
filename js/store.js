@@ -62,6 +62,9 @@ export function defaultState() {
     settings: {
       name: '',
       currency: 'USD',
+      // Moneda en la que se capturan los costos y tipo de cambio (unidades por 1 de la moneda de ingresos).
+      costCurrency: 'USD',
+      fxRate: 16,
       incomeEstimate: 0,
       taxPct: 10,
       payFirstPct: 10,
