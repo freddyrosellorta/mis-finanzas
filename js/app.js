@@ -470,17 +470,16 @@ function viewComida() {
 
     <section class="card stack">
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
-      <p class="sub">Elige cómo se vende cada producto y escribe su precio: por kg, por litro, por pieza (con su peso) o por paquete (con su contenido, p. ej. una bolsa de pan de 680 g).</p>
+      <p class="sub">Elige cómo se vende cada producto y escribe su precio. La compra se redondea hacia arriba para una semana${t.people > 1 ? ` y ${t.people} personas` : ''}. Toca el nombre de un producto para cambiar cuánto trae su pieza o paquete.</p>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th>${t.people > 1 ? '<th class="r">Compra/día</th>' : ''}<th>Se vende por</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Peso o contenido</th><th class="r">Costo/día</th><th></th></tr></thead>
+        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th><th class="r">Compra/semana</th><th>Se vende por</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Costo/semana</th><th></th></tr></thead>
         <tbody>${f.items.map((it, i) => `<tr>
-          <td><div style="font-weight:600">${esc(it.name)}</div><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
+          <td><button class="btn link food-name" data-action="open" data-modal="alimento" data-index="${i}" title="Editar ${esc(it.name)}">${esc(it.name)}</button><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
           <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
-          ${t.people > 1 ? `<td class="r num">${purchase(it, t.people)}</td>` : ''}
+          <td class="r num">${purchase(it, t.people, i)}</td>
           <td><span class="popup" style="min-width:126px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
-          <td class="r">${isWeighed(it) ? `<span class="muted">${UNIT_NAMES[it.priceUnit].fixed}</span>` : `<div class="row" style="justify-content:flex-end;gap:4px"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="${it.priceUnit === 'pieza' ? 'Peso de una pieza' : 'Contenido del paquete'} en gramos o mililitros" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"><span class="tiny muted">g/ml</span></div>`}</td>
-          <td class="r num">${num(it.price) && num(it.priceGrams) ? fmtCost((num(it.grams) * t.people / num(it.priceGrams)) * num(it.price)) : '<span class="muted">—</span>'}</td>
+          <td class="r num">${num(it.price) && num(it.priceGrams) ? fmtCost((num(it.grams) * t.people * 7 / num(it.priceGrams)) * num(it.price)) : '<span class="muted">—</span>'}</td>
           <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -490,23 +489,22 @@ function viewComida() {
 
 // Cómo se vende cada alimento: por kg o litro (precio de 1000 g/ml), por pieza (con su peso) o por paquete (con su contenido).
 const UNIT_NAMES = {
-  kg: { por: 'por kg', fixed: '1 kg' },
-  litro: { por: 'por litro', fixed: '1 L' },
+  kg: { por: 'por kg', one: 'kg', many: 'kg' },
+  litro: { por: 'por litro', one: 'L', many: 'L' },
   pieza: { por: 'por pieza', one: 'pieza', many: 'piezas' },
   paquete: { por: 'por paquete', one: 'paquete', many: 'paquetes' },
 };
 const isWeighed = (it) => it.priceUnit === 'kg' || it.priceUnit === 'litro';
 
-// Cantidad a comprar al día para todas las personas, en la unidad en que se vende.
-function purchase(it, people) {
-  const total = num(it.grams) * people;
-  const liquid = it.priceUnit === 'litro';
-  const weight = total >= 1000 ? `${Math.round(total / 10) / 100} ${liquid ? 'L' : 'kg'}` : `${Math.round(total)} ${liquid ? 'ml' : 'g'}`;
-  if (isWeighed(it) || !num(it.priceGrams)) return weight;
-  const units = Math.round((total / num(it.priceGrams)) * 100) / 100;
+// Compra de la semana en unidades redondeadas (½ kg, 3 paquetes, 42 piezas, 1 L cada 7 semanas).
+function purchase(it, people, index) {
+  const p = E.weeklyPurchase(it, people);
+  if (!p) return `<button class="btn link" data-action="open" data-modal="alimento" data-index="${index}">Falta cuánto trae…</button>`;
+  if (!p.amount) return '<span class="muted">—</span>';
   const names = UNIT_NAMES[it.priceUnit];
-  const count = `${units} ${units === 1 ? names.one : names.many}`;
-  return it.priceUnit === 'pieza' ? count : `${weight} · ${count}`;
+  const amount = p.amount === 0.5 ? '½' : String(p.amount).replace(/\.5$/, '½').replace(/^0½$/, '½');
+  const text = `${amount} ${p.amount <= 1 ? names.one : names.many}`;
+  return p.everyWeeks > 1 ? `${text} <span class="muted">cada ${p.everyWeeks} semanas</span>` : text;
 }
 
 function viewMas() {
@@ -847,7 +845,7 @@ function modalHTML() {
         <p id="sync-msg" class="small warn-ink" role="status"></p>
         ${foot('Conectar', 'save-sync')}`;
     case 'alimento':
-      return `${head('Agregar alimento')}
+      return `${head(d.index != null ? 'Editar alimento' : 'Agregar alimento')}
         <p class="small ink-2">Copia los valores por 100 g de la etiqueta o de tu app de nutrición.</p>
         <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" data-draft="name" value="${esc(d.name)}"></div>
         <div class="form-grid">
@@ -857,9 +855,9 @@ function modalHTML() {
         <div class="form-grid">
           <div class="field"><label for="a-unit">Se vende por</label><span class="popup"><select id="a-unit" class="input" data-draft="priceUnit">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === d.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></div>
           <div class="field"><label for="a-price">Precio</label>${money('id="a-price" data-draft="price"', d.price, '', 'cost')}<span class="help">Puedes dejarlo vacío y ponerlo después.</span></div>
-          <div class="field"><label for="a-pg">Peso o contenido (g/ml)</label><input id="a-pg" class="input" type="number" inputmode="decimal" min="1" step="any" data-draft="priceGrams" value="${esc(d.priceGrams)}" placeholder="Solo por pieza o paquete"><span class="help">Peso de una pieza o contenido del paquete. Se ignora en kg y litro.</span></div>
+          <div class="field"><label for="a-pg">¿Cuánto trae? (g o ml)</label><input id="a-pg" class="input" type="number" inputmode="decimal" min="1" step="any" data-draft="priceGrams" value="${esc(d.priceGrams)}" placeholder="Solo por pieza o paquete"><span class="help">Peso de una pieza (huevo ≈ 50 g) o contenido del paquete (bolsa de pan 680 g). Se ignora en kg y litro.</span></div>
         </div>
-        ${foot('Agregar', 'save-alimento')}`;
+        ${foot(d.index != null ? 'Guardar' : 'Agregar', 'save-alimento')}`;
     default:
       return '';
   }
@@ -873,7 +871,12 @@ function openModal(name, data = {}) {
   if (name === 'saldo') base.envId = 'emergencia';
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
-  if (name === 'alimento') Object.assign(base, { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceUnit: 'kg', priceGrams: '' });
+  if (name === 'alimento') {
+    const existing = data.index != null ? state.food.items[Number(data.index)] : null;
+    Object.assign(base, existing
+      ? { ...existing, index: Number(data.index), price: num(existing.price) || '', priceGrams: E.weeklyPurchase(existing) === null || isWeighed(existing) ? '' : existing.priceGrams }
+      : { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceUnit: 'kg', priceGrams: '' });
+  }
   ui.draft = base;
   renderModal();
   setTimeout(() => $modal.querySelector('[autofocus], input, select')?.focus(), 50);
@@ -987,7 +990,17 @@ document.addEventListener('change', (ev) => {
     const item = state.food.items[Number(el.dataset.food)];
     if (el.dataset.field === 'priceUnit') {
       item.priceUnit = el.value;
-      if (isWeighed(item)) item.priceGrams = 1000;
+      if (isWeighed(item)) {
+        item.priceGrams = 1000;
+      } else {
+        // Al pasar a pieza o paquete hace falta saber cuánto trae: se abre la hoja de edición.
+        item.priceGrams = 0;
+        touch('food');
+        persist();
+        render();
+        openModal('alimento', { index: el.dataset.food });
+        return;
+      }
     } else {
       item[el.dataset.field] = num(el.value);
     }
@@ -1063,9 +1076,11 @@ const ACTIONS = {
     const priceUnit = PRICE_UNITS.includes(d.priceUnit) ? d.priceUnit : 'kg';
     const weighed = priceUnit === 'kg' || priceUnit === 'litro';
     if (!weighed && !num(d.priceGrams)) return toast('Escribe el peso de la pieza o el contenido del paquete');
-    state.food.items.push({ id: E.uid(), name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : num(d.priceGrams) });
+    const item = { name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : num(d.priceGrams) };
+    if (d.index != null) Object.assign(state.food.items[d.index], item);
+    else state.food.items.push({ id: E.uid(), ...item });
     touch('food');
-    closeModal(); commit('Alimento agregado ✓');
+    closeModal(); commit(d.index != null ? 'Alimento actualizado ✓' : 'Alimento agregado ✓');
   },
   'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
   'del-pay': (el) => {

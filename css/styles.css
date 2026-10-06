@@ -483,3 +483,5 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 
 /* Tabla de alimentos: el nombre necesita espacio; la tabla se desplaza en pantallas angostas. */
 .table td:first-child { min-width: 190px; }
+.btn.link.food-name { font-weight: 600; color: var(--label); padding: 0; height: auto; text-align: left; }
+.btn.link.food-name:hover { color: var(--accent); }

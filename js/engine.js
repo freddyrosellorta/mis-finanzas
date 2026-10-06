@@ -92,6 +92,19 @@ export function referenceIncome(state, month) {
 
 // ---------- Alimentación ----------
 
+// Compra semanal de un alimento para todas las personas, redondeada hacia arriba en la unidad en que se vende:
+// piezas y paquetes enteros; kg y litros en medios. Si dura más de una semana, se indica cada cuántas semanas.
+export function weeklyPurchase(item, people = 1) {
+  const need = (Number(item.grams) || 0) * Math.max(1, people) * 7; // g o ml por semana
+  const size = Number(item.priceGrams) || 0;
+  if (!need) return { amount: 0, everyWeeks: 1, exact: 0 };
+  if (!size) return null; // falta el contenido del paquete o el peso de la pieza
+  const exact = need / size; // en kg, litros, piezas o paquetes
+  const step = item.priceUnit === 'kg' || item.priceUnit === 'litro' ? 0.5 : 1;
+  if (exact >= step) return { amount: Math.ceil(exact / step - 1e-9) * step, everyWeeks: 1, exact };
+  return { amount: step, everyWeeks: Math.max(1, Math.floor(step / exact)), exact };
+}
+
 export function foodTotals(food) {
   const t = { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, dailyCost: 0 };
   for (const it of food.items) {
