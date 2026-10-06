@@ -428,7 +428,7 @@ function viewComida() {
   const tg = f.targets;
   const macros = [
     ['kcal', 'Calorías', 'kcal', 0.03], ['protein', 'Proteína', 'g', 0.03], ['fat', 'Grasas', 'g', 0.05],
-    ['carbs', 'Carbohidratos', 'g', 0.05], ['fiber', 'Fibra', 'g', 0],
+    ['carbs', f.netCarbs ? 'Carbohidratos netos' : 'Carbohidratos', 'g', 0.05], ['fiber', 'Fibra', 'g', 0],
   ];
   const cheap = f.items.filter((i) => i.protein >= 5 && num(i.price) > 0)
     .map((i) => ({ name: i.name, cost: (num(i.price) / num(i.priceGrams || 1000)) * 100 / i.protein * 100 }))
@@ -439,7 +439,7 @@ function viewComida() {
       <h2>Metas diarias de nutrición</h2>
       <p class="sub">Ajusta los gramos de cada alimento hasta que todo quede en ✓. Las metas se pueden editar.</p>
       ${macros.map(([k, label, unit, tol]) => {
-        const v = t[k]; const goal = num(tg[k]);
+        const v = k === 'carbs' && f.netCarbs ? t.netCarbs : t[k]; const goal = num(tg[k]);
         const diff = v - goal;
         const ok = k === 'fiber' ? v >= goal : Math.abs(diff) <= goal * tol || (k === 'protein' && diff >= 0 && diff <= goal * 0.08);
         return `<div class="macro">
@@ -453,13 +453,17 @@ function viewComida() {
     <section class="card stack">
       <h2>Costo</h2>
       <div class="stats">
-        <div class="stat"><div class="k">Por día</div><div class="v">${fmtCost(t.dailyCost)}</div>${isDual() ? `<div class="k">${inBase(t.dailyCost)}</div>` : ''}</div>
-        <div class="stat"><div class="k">Al mes</div><div class="v">${fmtCost(t.monthlyCost)}</div>${isDual() ? `<div class="k">${inBase(t.monthlyCost)}</div>` : ''}</div>
+        <div class="stat"><div class="k">Por día${t.people > 1 ? ` (${t.people} personas)` : ''}</div><div class="v">${fmtCost(t.dailyCost)}</div>${isDual() ? `<div class="k">${inBase(t.dailyCost)}</div>` : ''}</div>
+        <div class="stat"><div class="k">Al mes${t.people > 1 ? ` (${t.people} personas)` : ''}</div><div class="v">${fmtCost(t.monthlyCost)}</div>${isDual() ? `<div class="k">${inBase(t.monthlyCost)}</div>` : ''}</div>
       </div>
       <div class="form-grid">
         <div class="field"><label for="waste">Margen por merma</label>${percent(`id="waste" ${bind('food.wastePct')}`, f.wastePct)}<span class="help">Comida que se daña o sobra. 10% es razonable.</span></div>
         <div class="field"><label for="extra">Extras al mes</label>${money(`id="extra" ${bind('food.extraMonthly')}`, f.extraMonthly, '', 'cost')}<span class="help">Condimentos, café, salsas.</span></div>
       </div>
+      <div class="form-grid">
+        <div class="field"><label for="people">Personas que comen este menú</label><input id="people" class="input" type="number" inputmode="numeric" min="1" max="10" step="1" value="${esc(t.people)}" ${bind('food.people')}><span class="help">Los gramos del menú son por persona; la compra y el costo se multiplican.</span></div>
+      </div>
+      <label class="check switch-row"><span>Contar carbohidratos netos (sin fibra)</span><input type="checkbox" switch ${f.netCarbs ? 'checked' : ''} ${bind('food.netCarbs', 'bool')}></label>
       <label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>
       ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmtCost(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
     </section>
@@ -468,18 +472,31 @@ function viewComida() {
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
       <p class="sub">Pon los precios de tu súper. “Precio por” indica a cuánto corresponde el precio (1000 g = kg, 50 g = 1 huevo).</p>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Alimento</th><th class="r">g/día</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
+        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th>${t.people > 1 ? '<th class="r">Compra/día</th>' : ''}<th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
         <tbody>${f.items.map((it, i) => `<tr>
           <td><div style="font-weight:600">${esc(it.name)}</div><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
-          <td class="r"><input class="input num" style="width:80px" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(it.price)}" aria-label="Precio de ${esc(it.name)}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
+          ${t.people > 1 ? `<td class="r num">${purchase(it, t.people)}</td>` : ''}
+          <td class="r"><input class="input num" style="width:80px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-food="${i}" data-field="price" data-k="f:${i}:p">${it.priceLabel ? `<div class="tiny muted">por ${esc(it.priceLabel)}</div>` : ''}</td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="Gramos que corresponden al precio" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"></td>
-          <td class="r num">${fmtCost((num(it.grams) / num(it.priceGrams || 1000)) * num(it.price))}</td>
+          <td class="r num">${num(it.price) ? fmtCost((num(it.grams) * t.people / num(it.priceGrams || 1000)) * num(it.price)) : '<span class="muted">—</span>'}</td>
           <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
       <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
     </section>`;
+}
+
+// Cantidad a comprar al día para todas las personas: en unidades si el precio es por pieza (huevo, lata…).
+function purchase(it, people) {
+  const total = num(it.grams) * people;
+  const byUnit = it.priceLabel && !['kg', 'litro', 'frasco 300 g'].includes(it.priceLabel);
+  if (byUnit && num(it.priceGrams)) {
+    const units = Math.round((total / num(it.priceGrams)) * 10) / 10;
+    const names = { unidad: ['pieza', 'piezas'], lata: ['lata', 'latas'] }[it.priceLabel];
+    return names ? `${units} ${units === 1 ? names[0] : names[1]}` : `${units} × ${esc(it.priceLabel)}`;
+  }
+  return total >= 1000 ? `${Math.round(total / 10) / 100} ${it.priceLabel === 'litro' ? 'L' : 'kg'}` : `${Math.round(total)} ${it.priceLabel === 'litro' ? 'ml' : 'g'}`;
 }
 
 function viewMas() {

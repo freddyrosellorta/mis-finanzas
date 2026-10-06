@@ -97,6 +97,8 @@ export function defaultState() {
     food: {
       linked: true,
       wastePct: 10,
+      people: 1,         // personas que comen este menú (la compra y el costo se multiplican)
+      netCarbs: false,   // comparar carbohidratos netos (sin fibra) en lugar de totales
       extraMonthly: 20,
       targets: { kcal: 3150, protein: 197, fat: 105, carbs: 355, fiber: 44 },
       items: FOOD_ITEMS.map((x) => ({ ...x })),
