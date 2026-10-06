@@ -202,7 +202,7 @@ main {
   .nav button .ico { font-size: 15px; width: 18px; color: var(--accent); display: inline-flex; justify-content: center; }
   .nav button[aria-current="page"] { background: var(--fill-strong); color: var(--label); }
   main { margin-left: max(220px, calc((100vw - 820px + 220px) / 2)); padding: 28px 32px 48px; }
-  .native main { margin: 0 auto; padding: 20px 28px 40px; }
+  .native main { margin: 0 auto; padding: 20px 28px 40px; max-width: 1040px; }
 }
 
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -480,3 +480,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   .popup::before { -webkit-mask-size: 22px 22px; mask-size: 22px 22px; }
   .popup select.input { padding-right: 40px; }
 }
+
+/* Tabla de alimentos: el nombre necesita espacio; la tabla se desplaza en pantallas angostas. */
+.table td:first-child { min-width: 190px; }
