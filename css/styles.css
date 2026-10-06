@@ -450,3 +450,29 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .guide h3 { margin: 14px 0 4px; }
 .guide p, .guide li { color: var(--label-2); line-height: 18px; }
 .guide ol, .guide ul { padding-left: 20px; margin: 6px 0; }
+
+.btn.link { white-space: normal; text-align: left; }
+
+/* iPhone (HIG de iOS): cuerpo de 17 pt, áreas táctiles de 44 pt y campos de 16 px o más para que Safari no haga zoom. */
+@media (pointer: coarse) {
+  body { font-size: 17px; line-height: 22px; }
+  .small { font-size: 15px; line-height: 20px; }
+  .tiny, .field .help, .legend, .stat .k, .mov .meta, .step-title, .hero .foot, .env .detail .tiny, .badge { font-size: 13px; line-height: 18px; }
+  .card > h2, .sheet-head h2 { font-size: 17px; line-height: 22px; }
+  h2 { font-size: 20px; line-height: 25px; }
+  .input, .popup select.input { height: 44px; font-size: 17px; line-height: 44px; }
+  .input.amount { height: 52px; font-size: 28px; }
+  .btn, .btn.big { height: 44px; padding: 0 18px; font-size: 17px; }
+  .btn.sm { height: 36px; padding: 0 14px; font-size: 15px; }
+  .btn.link { height: auto; min-height: 44px; padding: 0; }
+  .icon-btn { width: 44px; height: 44px; font-size: 17px; }
+  .segmented span { height: 32px; line-height: 32px; }
+  .month-nav button { width: 44px; height: 36px; }
+  .env { padding: 12px; }
+  .env .emoji { font-size: 24px; }
+  .table .input, .macro .vals .input { height: 36px; }
+  .stat .v { font-size: 20px; line-height: 25px; }
+  .popup::after, .popup::before { right: 8px; width: 22px; height: 22px; }
+  .popup::before { -webkit-mask-size: 22px 22px; mask-size: 22px 22px; }
+  .popup select.input { padding-right: 40px; }
+}
