@@ -268,7 +268,19 @@ function findRole(state, role) {
   return state.envelopes.find((e) => e.role === role);
 }
 
-// Reparte `amount` según: impuestos → págate primero → sobres del mes en cascada → excedente.
+// Días antes del día de pago en que un sobre pasa a ser urgente.
+export const DUE_WINDOW_DAYS = 7;
+
+// ¿El sobre vence pronto (o ya venció) en la fecha dada? Requiere `dueDay` (día del mes en que se paga).
+export function isDueSoon(env, date) {
+  const due = Number(env.dueDay);
+  if (!due) return false;
+  const day = Number(String(date).slice(8, 10)) || new Date(date).getDate();
+  return day >= due - DUE_WINDOW_DAYS;
+}
+
+// Reparte `amount` según: impuestos → págate primero → lo que vence pronto → necesidades a la par
+// → ahorro, imagen y gustos a la par → excedente.
 export function allocate(state, amount, date) {
   const month = monthKey(date);
   const s = state.settings;
@@ -294,17 +306,37 @@ export function allocate(state, amount, date) {
   const efFull = emergency && envelopeBalance(state, emergency.id) >= emergencyTarget(state, month);
   give(efFull ? invest || emergency : emergency, Math.round(toCents(amount) * (Number(s.payFirstPct) || 0) / 100), 'primero');
 
-  // 3. Cascada: llena lo que le falta a cada sobre este mes, en orden de prioridad.
-  for (const group of WATERFALL_ORDER) {
-    const envs = state.envelopes
-      .filter((e) => e.group === group && e.role !== 'impuestos')
-      .sort((a, b) => (a.priority || 99) - (b.priority || 99));
-    for (const env of envs) {
-      const target = toCents(monthlyTarget(state, env, month));
-      const already = toCents(fundedInMonth(state, env.id, month)) + (alloc[env.id] || 0);
-      give(env, target - already, 'mes');
+  // Lo que le falta a un sobre este mes (en centavos), contando lo que ya recibió en este reparto.
+  const missingOf = (env) => Math.max(0, toCents(monthlyTarget(state, env, month)) - toCents(fundedInMonth(state, env.id, month)) - (alloc[env.id] || 0));
+
+  // Reparte el dinero disponible entre varios sobres en proporción a lo que le falta a cada uno,
+  // de modo que todos avancen el mismo porcentaje. Los centavos sobrantes van a los que más necesitan.
+  const giveEvenly = (envs, stage) => {
+    const list = envs.map((env) => ({ env, miss: missingOf(env) })).filter((x) => x.miss > 0);
+    const total = list.reduce((sum, x) => sum + x.miss, 0);
+    if (!total || rem <= 0) return;
+    if (rem >= total) { for (const x of list) give(x.env, x.miss, stage); return; }
+    const pool = rem;
+    for (const x of list) x.got = give(x.env, Math.floor((pool * x.miss) / total), stage);
+    for (const x of list.sort((a, b) => b.miss - a.miss)) {
+      if (rem <= 0) break;
+      give(x.env, Math.min(rem, x.miss - x.got), stage);
     }
+  };
+
+  const active = state.envelopes.filter((e) => e.role !== 'impuestos');
+  const needs = active.filter((e) => e.group === 'necesidad');
+
+  // 3. Lo que vence pronto (p. ej. la renta del día 15) se completa primero, en orden de fecha.
+  for (const env of needs.filter((e) => isDueSoon(e, date)).sort((a, b) => Number(a.dueDay) - Number(b.dueDay))) {
+    give(env, missingOf(env), 'vence');
   }
+
+  // 4. Necesidades a la par: renta, comida, transporte y servicios avanzan el mismo porcentaje.
+  giveEvenly(needs, 'mes');
+
+  // 5. Con las necesidades cubiertas: ahorro, imagen y gustos a la par.
+  giveEvenly(active.filter((e) => e.group !== 'necesidad'), 'resto');
 
   // 4. Excedente: se divide entre fondo de emergencia, metas y dinero libre.
   if (rem > 0) {
@@ -338,7 +370,7 @@ export function allocate(state, amount, date) {
 
 // ---------- Recomendaciones ----------
 
-export function recommendations(state, month, fmt) {
+export function recommendations(state, month, fmt, today = new Date()) {
   const out = [];
   const add = (level, title, text) => out.push({ level, title, text });
   const income = referenceIncome(state, month);
@@ -350,6 +382,15 @@ export function recommendations(state, month, fmt) {
   if (income <= 0) {
     add('warning', 'Falta tu ingreso estimado', 'Escribe en Ajustes cuánto recibes al mes en promedio para poder evaluar tu plan.');
     return out;
+  }
+
+  // Sobres con día de pago próximo a los que todavía les falta dinero (solo en el mes actual).
+  if (month === monthKey(today)) {
+    const todayISO = `${month}-${String(today.getDate()).padStart(2, '0')}`;
+    for (const e of state.envelopes.filter((x) => x.dueDay && isDueSoon(x, todayISO))) {
+      const missing = monthlyTarget(state, e, month) - fundedInMonth(state, e.id, month);
+      if (missing > 0.005) add('critical', `${e.name}: faltan ${fmt(missing)}`, `Se paga el día ${e.dueDay}. Los próximos pagos que registres irán primero a este sobre hasta completarlo.`);
+    }
   }
 
   if (plan.total > income) {

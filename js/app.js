@@ -418,7 +418,7 @@ function envEditor(e, m) {
           ${e.role ? '' : `<label class="check"><span class="small">Grupo</span><span class="popup"><select class="input" ${envBind(e.id, 'group', 'text')}>${GROUP_ORDER.filter((g) => g !== 'impuestos').map((g) => `<option value="${g}" ${g === e.group ? 'selected' : ''}>${E.GROUPS[g].label}</option>`).join('')}</select></span></label>`}
           ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.shared ? 'checked' : ''} ${envBind(e.id, 'shared', 'bool')}>Gasto del hogar</label>` : ''}
           ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.pending ? 'checked' : ''} ${envBind(e.id, 'pending', 'bool')}>Aún no contratado</label>` : ''}
-          <label class="check"><span class="small">Prioridad</span><input class="input" type="number" min="1" max="99" style="width:56px" value="${esc(e.priority ?? 50)}" ${envBind(e.id, 'priority')}></label>
+          ${e.group === 'necesidad' && !auto ? `<label class="check" title="Si un pago llega en los ${E.DUE_WINDOW_DAYS} días previos a esta fecha, este sobre se completa primero"><span class="small">Se paga el día</span><input class="input" type="number" min="1" max="31" placeholder="—" style="width:56px" value="${e.dueDay ? esc(e.dueDay) : ''}" ${envBind(e.id, 'dueDay')}></label>` : ''}
           ${e.role ? '' : `<button class="btn ghost sm danger" data-action="del-env" data-id="${e.id}">Eliminar</button>`}
         </div>
       </div>
@@ -745,15 +745,14 @@ function viewAjustes() {
 function viewGuia() {
   return `<div class="page-head"><div><h1>Cómo funciona</h1><p>El método detrás de cada reparto.</p></div></div>
     <section class="card guide">
-      <h3>1. Presupuesto en cascada por sobres</h3>
-      <p>Como tus ingresos llegan de clientes en montos y fechas variables, no sirve un porcentaje fijo para todo. Cada pago llena los sobres en orden de prioridad hasta cubrir lo que el mes necesita. Es el método que planificadores financieros recomiendan para trabajadores independientes.</p>
+      <h3>1. Presupuesto por sobres, a la par</h3>
+      <p>Como tus ingresos llegan de clientes en montos y fechas variables, no sirve un porcentaje fijo para todo. Cada pago se reparte por sobres siguiendo estas reglas, hasta cubrir lo que el mes necesita; los pagos siguientes completan lo que falte. Es el presupuesto por sobres que recomiendan los planificadores financieros para trabajadores independientes, ajustado para ingresos que llegan en varias semanas.</p>
       <ol>
         <li><strong>Impuestos</strong> (${state.settings.taxPct}%): ese dinero no es tuyo; se aparta antes de todo.</li>
         <li><strong>Págate primero</strong> (${state.settings.payFirstPct}%): el ahorro no es lo que sobra, es lo primero.</li>
-        <li><strong>Necesidades</strong>: renta, comida, servicios, internet, transporte y gimnasio (tu salud y tu entrenamiento son prioridad).</li>
-        <li><strong>Ahorro y metas</strong>: fondo de emergencia, Mac e iPhone con fecha.</li>
-        <li><strong>Imagen profesional</strong>: ropa, accesorios y cuidado personal. En tu medio son inversión, por eso tienen presupuesto propio.</li>
-        <li><strong>Gustos</strong>: salidas en pareja.</li>
+        <li><strong>Lo que vence pronto</strong>: si un sobre tiene día de pago (p. ej. la renta) y faltan ${E.DUE_WINDOW_DAYS} días o menos, se completa primero.</li>
+        <li><strong>Necesidades a la par</strong>: renta, comida, servicios, internet, transporte y gimnasio reciben el mismo porcentaje de lo que les falta. Así ninguna se queda en cero mientras llegan los pagos.</li>
+        <li><strong>Ahorro, imagen y gustos a la par</strong>: con las necesidades del mes cubiertas, el fondo de emergencia, tus metas, la ropa y las salidas avanzan juntos.</li>
         <li><strong>Excedente</strong>: si un pago cubre todo, lo que sobra se reparte entre fondo de emergencia, adelantar metas y dinero libre.</li>
       </ol>
       <h3>2. Regla 50/30/20</h3>
@@ -838,7 +837,7 @@ function viewOnb() {
 
 // ---------- Modales ----------
 
-const STAGE_TITLES = { impuestos: '1 · Impuestos', primero: '2 · Págate primero', mes: '3 · Lo que necesita el mes', excedente: '4 · Excedente' };
+const STAGE_TITLES = { impuestos: 'Impuestos', primero: 'Págate primero', vence: 'Vence pronto', mes: 'Necesidades del mes, a la par', resto: 'Ahorro, imagen y gustos, a la par', excedente: 'Excedente' };
 
 // Moneda del dinero que entra (pago o ahorro existente): la de ingresos o la de gastos, con su tipo de cambio.
 const draftBase = (d) => E.toBase(state, num(d.amount), d.currency, d.rate);
@@ -862,7 +861,7 @@ function paymentPreview() {
   const stages = {};
   for (const st of r.steps) (stages[st.stage] ||= {})[st.envId] = ((stages[st.stage] || {})[st.envId] || 0) + st.amount;
   return `${stackBar(byGroup, amount)}
-    ${Object.entries(STAGE_TITLES).filter(([k]) => stages[k]).map(([k, title]) => `<div class="step-title">${title}</div>
+    ${Object.entries(STAGE_TITLES).filter(([k]) => stages[k]).map(([k, title], i) => `<div class="step-title">${i + 1} · ${title}</div>
       ${Object.entries(stages[k]).map(([id, v]) => { const e = envById(id); return `<div class="step-line"><span class="l"><i class="dot" style="background:var(--g-${e.group})"></i>${esc(e.icon)} ${esc(e.name)}</span><span class="num"><strong>${fmt(v)}</strong></span></div>`; }).join('')}`).join('')}`;
 }
 
