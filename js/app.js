@@ -1,0 +1,1116 @@
+// Interfaz de la app. Dibuja vistas con plantillas y reacciona con delegación de eventos.
+import * as E from './engine.js';
+import { load, save, defaultState, migrate, exportFile, isNative, postNative, loadSyncConfig, saveSyncConfig } from './store.js';
+import * as Sync from './sync.js';
+
+let state = load();
+const ui = {
+  view: state.onboarded ? 'inicio' : 'onb',
+  month: E.monthKey(new Date()),
+  onbStep: 0,
+  onbSaldo: { emergencia: '', mac: '', iphone: '' },
+  modal: null,
+  draft: {},
+};
+const $app = document.getElementById('app');
+const $modal = document.getElementById('modal-root');
+const $toast = document.getElementById('toast');
+
+// ---------- Utilidades ----------
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const sumBy = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+const pct = (v) => `${Math.round(v * 100)}%`;
+const clamp01 = (v) => Math.max(0, Math.min(1, v || 0));
+const envById = (id) => state.envelopes.find((e) => e.id === id);
+// Mismo orden que la cascada; también es el orden validado de colores de las categorías.
+const GROUP_ORDER = ['necesidad', 'ahorro', 'profesional', 'gusto', 'impuestos'];
+
+if (isNative) document.documentElement.classList.add('native');
+
+// SF Symbols: en la app de Mac llegan como imágenes desde el lado nativo; en el navegador se usa un texto de respaldo.
+const SYMBOLS = (isNative && window.__NATIVE__?.symbols) || {};
+const SYMBOL_FALLBACK = {
+  plus: '+', minus: '−', 'arrow.left.arrow.right': '⇄', 'chevron.left': '‹', 'chevron.right': '›', 'chevron.forward': '›',
+  trash: '🗑', xmark: '✕', 'square.and.arrow.up': '↑', 'square.and.arrow.down': '↓', lightbulb: '💡',
+  'checkmark.circle.fill': '✓', 'exclamationmark.triangle.fill': '⚠', 'xmark.octagon.fill': '⛔', 'info.circle.fill': 'ℹ',
+  'building.columns': '🏦', 'arrow.counterclockwise': '↺', house: '🏠', target: '🎯', 'chart.pie': '🧮',
+  'fork.knife': '🥗', 'person.2': '🏡', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
+};
+function sym(name, cls = '') {
+  const url = SYMBOLS[name];
+  if (url) return `<span class="sym ${cls}" aria-hidden="true" style="--sym:url(${url})"></span>`;
+  return `<span class="sym-fb ${cls}" aria-hidden="true">${SYMBOL_FALLBACK[name] || ''}</span>`;
+}
+
+function fmt(n) {
+  const v = Number(n) || 0;
+  const dec = Math.abs(v - Math.round(v)) < 0.005 ? 0 : 2;
+  try {
+    return new Intl.NumberFormat('es-US', { style: 'currency', currency: state.settings.currency, currencyDisplay: 'narrowSymbol', minimumFractionDigits: dec, maximumFractionDigits: dec }).format(v);
+  } catch {
+    return `$${v.toFixed(dec)}`;
+  }
+}
+function currencySymbol() {
+  try {
+    return new Intl.NumberFormat('es-US', { style: 'currency', currency: state.settings.currency, currencyDisplay: 'narrowSymbol' })
+      .formatToParts(0).find((p) => p.type === 'currency').value;
+  } catch { return '$'; }
+}
+function monthLabel(m) {
+  const [y, mo] = m.split('-').map(Number);
+  const label = new Date(y, mo - 1, 1).toLocaleDateString('es', { month: 'long', year: 'numeric' });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+function dateLabel(d) {
+  return new Date(d + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'short' });
+}
+
+function toast(msg) {
+  $toast.textContent = msg;
+  $toast.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => $toast.classList.remove('show'), 2600);
+}
+
+function persist() {
+  state.updatedAt = Date.now();
+  if (!save(state)) toast('No se pudo guardar en este dispositivo. Exporta un respaldo.');
+  scheduleSync();
+}
+
+// Marcas para la fusión entre dispositivos: qué sección cambió y qué registros se borraron.
+function touch(section) { (state.meta ||= {})[section] = Date.now(); }
+function markDeleted(...ids) { state.deleted ||= {}; for (const id of ids) state.deleted[id] = Date.now(); }
+
+// Vuelve a dibujar después de que el navegador mueva el foco (p. ej. con Tab) y lo conserva.
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  setTimeout(() => { renderQueued = false; render(); }, 0);
+}
+
+function commit(msg) {
+  persist();
+  render();
+  if (msg) toast(msg);
+}
+
+// ---------- Sincronización entre dispositivos ----------
+
+const DEVICE = isNative ? 'Mac' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : 'navegador';
+const syncState = { config: loadSyncConfig(), busy: false, again: false, last: null, error: '' };
+let syncTimer = null;
+
+function scheduleSync(delay = 2000) {
+  if (!syncState.config) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, delay);
+}
+
+async function runSync() {
+  if (!syncState.config) return;
+  if (syncState.busy) { syncState.again = true; return; }
+  syncState.busy = true;
+  refreshSyncStatus();
+  const startedAt = state.updatedAt;
+  try {
+    const result = await Sync.synchronize(state, syncState.config, { device: DEVICE });
+    if (state.updatedAt !== startedAt) {
+      // Hubo cambios mientras se sincronizaba: se fusionan y se vuelve a subir.
+      state = migrate(Sync.mergeStates(state, result.state));
+      syncState.again = true;
+    } else if (result.changed) {
+      state = migrate(result.state);
+    }
+    if (result.changed || syncState.again) {
+      save(state);
+      if (!ui.modal) render();
+    }
+    syncState.waiting = Boolean(result.waiting);
+    if (!result.waiting) syncState.last = result.at;
+    syncState.error = '';
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (message !== syncState.error) toast(`Sincronización: ${message}`);
+    syncState.error = message;
+  } finally {
+    syncState.busy = false;
+    refreshSyncStatus();
+    if (syncState.again) { syncState.again = false; scheduleSync(500); }
+  }
+}
+
+function syncStatusText() {
+  if (!syncState.config) return 'Desactivada';
+  if (syncState.busy) return 'Sincronizando…';
+  if (syncState.error) return `Error: ${syncState.error}`;
+  if (syncState.waiting) return 'Conectado; esperando datos de algún dispositivo';
+  if (syncState.last) return `Sincronizado a las ${new Date(syncState.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`;
+  return 'Pendiente';
+}
+function refreshSyncStatus() {
+  const el = document.getElementById('sync-status');
+  if (el) {
+    el.textContent = syncStatusText();
+    el.className = `small ${syncState.error ? 'warn-ink' : 'ink-2'}`;
+  }
+}
+
+// ---------- Piezas reutilizables ----------
+
+const money = (attrs, value, cls = '') =>
+  `<div class="money ${cls}" data-sym="${esc(currencySymbol())}"><input class="input ${cls.includes('amount') ? 'amount' : ''}" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0" value="${value === '' || value == null ? '' : esc(value)}" ${attrs}></div>`;
+const percent = (attrs, value) =>
+  `<div class="money pct"><input class="input" type="number" inputmode="decimal" min="0" max="100" step="1" value="${esc(value)}" ${attrs}></div>`;
+
+const bind = (path, type = 'number') => `data-bind="${path}" data-type="${type}" data-k="b:${path}"`;
+const envBind = (id, field, type = 'number') => `data-env="${id}" data-field="${field}" data-type="${type}" data-k="e:${id}:${field}"`;
+
+function meter(value, opts = {}) {
+  const w = clamp01(value) * 100;
+  const color = opts.color ? `background:${opts.color}` : '';
+  return `<div class="meter ${opts.thin ? 'thin' : ''}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(w)}"><span style="width:${w}%;${color}"></span></div>`;
+}
+
+// Barra apilada por grupo: cada segmento tiene tooltip nativo (title) y la leyenda nombra cada color.
+function stackBar(byGroup, total, extra = null) {
+  const segs = GROUP_ORDER.filter((g) => (byGroup[g] || 0) > 0).map((g) => ({ g, v: byGroup[g], label: E.GROUPS[g].label, color: `var(--g-${g})` }));
+  if (extra && extra.v > 0) segs.push(extra);
+  const t = total || sumBy(segs, (s) => s.v) || 1;
+  if (!segs.length) return '<div class="stackbar" aria-hidden="true"></div>';
+  return `
+    <div class="stackbar" role="img" aria-label="${esc(segs.map((s) => `${s.label} ${fmt(s.v)}`).join(', '))}">
+      ${segs.map((s) => `<span style="flex:${s.v / t};background:${s.color}" title="${esc(`${s.label}: ${fmt(s.v)} (${pct(s.v / t)})`)}"></span>`).join('')}
+    </div>
+    <div class="legend">${segs.map((s) => `<span><i class="dot" style="background:${s.color}"></i>${esc(s.label)} · ${fmt(s.v)}</span>`).join('')}</div>`;
+}
+
+const LEVEL_ICON = { critical: 'xmark.octagon.fill', warning: 'exclamationmark.triangle.fill', good: 'checkmark.circle.fill', info: 'info.circle.fill' };
+const LEVEL_RANK = { critical: 0, warning: 1, info: 2, good: 3 };
+function tipCards(recs) {
+  return recs.map((r) => `
+    <div class="tipcard ${r.level}">
+      <span class="ic">${sym(LEVEL_ICON[r.level])}</span>
+      <div><strong><span class="sr-only">${{ critical: 'Urgente', warning: 'Atención', good: 'Bien', info: 'Dato' }[r.level]}: </span>${esc(r.title)}</strong><p>${esc(r.text)}</p></div>
+    </div>`).join('');
+}
+function sortedRecs() {
+  return E.recommendations(state, ui.month, fmt).sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]);
+}
+
+function monthNav() {
+  return `<div class="month-nav">
+    <button data-action="month" data-d="-1" aria-label="Mes anterior" title="Mes anterior">${sym('chevron.left')}</button>
+    <span>${monthLabel(ui.month)}</span>
+    <button data-action="month" data-d="1" aria-label="Mes siguiente" title="Mes siguiente">${sym('chevron.right')}</button>
+  </div>`;
+}
+
+// ---------- Vistas ----------
+
+function viewInicio() {
+  const m = ui.month;
+  const received = E.incomeInMonth(state, m);
+  const plan = E.monthPlan(state, m);
+  const covered = sumBy(plan.lines, (l) => Math.min(E.fundedInMonth(state, l.env.id, m), l.target));
+  const coverage = plan.total > 0 ? covered / plan.total : 0;
+  const missing = Math.max(0, plan.total - covered);
+  const recs = sortedRecs().filter((r) => r.level !== 'good').slice(0, 3);
+
+  const groups = GROUP_ORDER.map((g) => {
+    const envs = state.envelopes.filter((e) => e.group === g).sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50));
+    if (!envs.length) return '';
+    return `<div class="group-title"><i class="dot" style="background:var(--g-${g})"></i>${E.GROUPS[g].label}</div>
+      <div class="env-list">${envs.map((e) => envRow(e, m)).join('')}</div>`;
+  }).join('');
+
+  return `
+    <div class="page-head">
+      <div><h1>Inicio</h1><p>Hola${state.settings.name ? `, ${esc(state.settings.name)}` : ''}. Así va tu dinero este mes.</p></div>
+      ${monthNav()}
+    </div>
+
+    <section class="card hero">
+      <div class="label">Recibido de clientes en ${monthLabel(m).toLowerCase()}</div>
+      <div class="big">${fmt(received)}</div>
+      ${meter(coverage)}
+      <div class="foot">
+        <span>Plan del mes cubierto: <strong>${pct(coverage)}</strong> de ${fmt(plan.total)}</span>
+        <span>${missing > 0 ? `Faltan ${fmt(missing)}` : '¡Mes cubierto! 🎉'}</span>
+      </div>
+    </section>
+
+    <div class="actions quick-actions">
+      <button class="btn primary big" data-action="open" data-modal="pago">${sym('plus')} Recibí un pago…</button>
+      <button class="btn big" data-action="open" data-modal="gasto">${sym('minus')} Registrar gasto…</button>
+    </div>
+
+    ${recs.length ? `<section class="card stack"><div class="row between"><h2>Recomendaciones</h2><button class="btn link sm" data-action="go" data-view="consejos">Ver todas</button></div>${tipCards(recs)}</section>` : ''}
+
+    <section class="stack">
+      <div class="row between"><h2>Tus sobres</h2><button class="btn sm" data-action="open" data-modal="mover">${sym('arrow.left.arrow.right')} Mover dinero…</button></div>
+      <p class="small ink-2">A la derecha, lo disponible en cada sobre. La barra muestra cuánto le ha llegado este mes de lo que necesita.</p>
+      ${groups}
+    </section>`;
+}
+
+function envRow(e, m) {
+  const bal = E.envelopeBalance(state, e.id);
+  const target = E.monthlyTarget(state, e, m);
+  const funded = E.fundedInMonth(state, e.id, m);
+  let detail;
+  if (e.goal && num(e.goal.target) > 0) {
+    detail = `${meter(bal / num(e.goal.target), { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Meta ${fmt(e.goal.target)}</span><span>${pct(bal / num(e.goal.target))}</span></span>`;
+  } else if (e.role === 'impuestos') {
+    detail = `<span class="tiny"><span>${state.settings.taxPct}% de cada pago</span><span>Este mes ${fmt(funded)}</span></span>`;
+  } else if (target > 0) {
+    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
+  } else {
+    detail = `<span class="tiny"><span>${e.role === 'libre' ? 'Recibe parte del excedente' : e.role === 'inversion' ? 'Recibe el excedente cuando el fondo está completo' : 'Sin monto mensual'}</span><span></span></span>`;
+  }
+  const badges = `${e.pending ? '<span class="badge">pendiente</span>' : ''}${e.shared && state.partner.mode !== 'yo100' ? '<span class="badge accent">compartido</span>' : ''}`;
+  return `<button class="env" data-action="open" data-modal="sobre" data-id="${e.id}">
+    <span class="emoji" aria-hidden="true">${esc(e.icon)}</span>
+    <span class="name">${esc(e.name)}${badges}</span>
+    <span class="bal num ${bal < 0 ? 'neg' : ''}">${fmt(bal)}</span>
+    <span class="detail">${detail}</span>
+  </button>`;
+}
+
+function viewConsejos() {
+  return `<div class="page-head"><div><h1>Recomendaciones</h1><p>Calculadas con tu plan y tus pagos de ${monthLabel(ui.month)}.</p></div>${monthNav()}</div>
+    <section class="card stack">${tipCards(sortedRecs())}</section>
+    <div><button class="btn" data-action="go" data-view="guia">¿En qué se basan estas reglas?</button></div>`;
+}
+
+function viewMetas() {
+  const m = ui.month;
+  const ef = state.envelopes.find((e) => e.role === 'emergencia');
+  const needs = E.needsMonthly(state, m);
+  const efTarget = E.emergencyTarget(state, m);
+  const efBal = ef ? E.envelopeBalance(state, ef.id) : 0;
+  const efMonthly = ef ? E.monthlyTarget(state, ef, m) : 0;
+  const goals = state.envelopes.filter((e) => e.goal);
+  const inv = state.envelopes.find((e) => e.role === 'inversion');
+
+  const goalCard = (e) => {
+    const bal = E.envelopeBalance(state, e.id);
+    const target = num(e.goal.target);
+    const monthly = E.monthlyTarget(state, e, m);
+    const left = E.monthsBetween(m, e.goal.date || m);
+    return `<section class="card stack">
+      <div class="row between"><h2>${esc(e.icon)} ${esc(e.name)}</h2><button class="icon-btn" data-action="del-env" data-id="${e.id}" aria-label="Eliminar meta" title="Eliminar meta">${sym('trash')}</button></div>
+      <div class="row between"><span class="num" style="font-size:1.5rem;font-weight:700">${fmt(bal)}</span><span class="muted">de ${fmt(target)}</span></div>
+      ${meter(target ? bal / target : 0, { color: `var(--g-${e.group})` })}
+      <div class="form-grid">
+        <div class="field"><label for="gt-${e.id}">Precio / meta</label>${money(`id="gt-${e.id}" ${envBind(e.id, 'goal.target')}`, e.goal.target || '')}</div>
+        <div class="field"><label for="gd-${e.id}">Lo quiero para</label><input class="input" type="month" id="gd-${e.id}" value="${esc(e.goal.date)}" ${envBind(e.id, 'goal.date', 'text')}></div>
+      </div>
+      <p class="small ink-2">${target <= 0 ? 'Escribe el precio para calcular cuánto apartar.' : bal >= target ? '¡Meta lograda! Ya puedes comprarlo sin deudas. 🎉' : `Aparta <strong>${fmt(monthly)}</strong> al mes durante ${left} ${left === 1 ? 'mes' : 'meses'}. El excedente de pagos grandes la adelanta.`}</p>
+    </section>`;
+  };
+
+  return `<div class="page-head"><div><h1>Metas</h1><p>Ahorra antes de comprar: sin deudas ni intereses.</p></div></div>
+    ${ef ? `<section class="card stack">
+      <h2>Fondo de emergencia</h2>
+      <p class="sub">Tu seguro contra meses flojos de clientes, enfermedades o imprevistos. Meta: ${state.settings.emergencyMonths} meses de necesidades (${fmt(needs)}/mes).</p>
+      <div class="row between"><span class="num" style="font-size:1.5rem;font-weight:700">${fmt(efBal)}</span><span class="muted">de ${fmt(efTarget)}</span></div>
+      ${meter(efTarget ? efBal / efTarget : 0, { color: 'var(--g-ahorro)' })}
+      <div class="stats">
+        <div class="stat"><div class="k">Meses cubiertos</div><div class="v">${needs ? (efBal / needs).toFixed(1) : '0'}</div></div>
+        <div class="stat"><div class="k">Aporte del mes</div><div class="v">${fmt(efMonthly)}</div></div>
+      </div>
+    </section>` : ''}
+    ${goals.map(goalCard).join('')}
+    <div class="actions">
+      <button class="btn" data-action="add-goal">${sym('plus')} Nueva meta</button>
+      <button class="btn" data-action="open" data-modal="saldo">${sym('building.columns')} Registrar ahorro existente…</button>
+    </div>
+    ${inv ? `<section class="card stack"><h2>Inversión a largo plazo</h2><p class="sub">Cuando el fondo de emergencia esté completo, el ahorro extra llega aquí. Consulta opciones de bajo costo (fondos indexados o un plan de retiro) con un asesor de tu país.</p><div class="num" style="font-size:1.5rem;font-weight:700">${fmt(E.envelopeBalance(state, inv.id))}</div></section>` : ''}`;
+}
+
+function viewPlan() {
+  const m = ui.month;
+  const income = E.referenceIncome(state, m);
+  const plan = E.monthPlan(state, m);
+  const afterTax = income * (1 - num(state.settings.taxPct) / 100);
+  const payFirst = income * num(state.settings.payFirstPct) / 100;
+  const byG = plan.byGroup;
+  const free = afterTax - (plan.total + payFirst);
+  const rule = [
+    { k: 'Necesidades', v: byG.necesidad || 0, goal: 0.5, max: true, color: 'var(--g-necesidad)' },
+    { k: 'Gustos e imagen', v: (byG.gusto || 0) + (byG.profesional || 0), goal: 0.3, max: true, color: 'var(--g-profesional)' },
+    { k: 'Ahorro', v: (byG.ahorro || 0) + payFirst, goal: 0.2, max: false, color: 'var(--g-ahorro)' },
+  ];
+
+  const editor = GROUP_ORDER.filter((g) => g !== 'impuestos').map((g) => {
+    const envs = state.envelopes.filter((e) => e.group === g).sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50));
+    return `<div class="group-title"><i class="dot" style="background:var(--g-${g})"></i>${E.GROUPS[g].label}<span class="muted" style="text-transform:none;font-weight:400;letter-spacing:0">— ${E.GROUPS[g].hint}</span></div>
+      <div class="env-list">${envs.map((e) => envEditor(e, m)).join('')}</div>`;
+  }).join('');
+
+  return `<div class="page-head"><div><h1>Plan mensual</h1><p>Cuánto necesita cada sobre al mes. Los pagos se reparten en este orden.</p></div>${monthNav()}</div>
+    <section class="card stack">
+      <div class="stats">
+        <div class="stat"><div class="k">Ingreso de referencia</div><div class="v">${fmt(income)}</div></div>
+        <div class="stat"><div class="k">Plan del mes</div><div class="v">${fmt(plan.total + payFirst)}</div></div>
+        <div class="stat"><div class="k">${free >= 0 ? 'Margen libre' : 'Te faltan'}</div><div class="v ${free < 0 ? 'warn-ink' : ''}">${fmt(Math.abs(free))}</div></div>
+      </div>
+      <p class="tiny muted">Ingreso de referencia = promedio de los últimos 3 meses con pagos registrados (o tu estimación en Ajustes si aún no hay historial).</p>
+      ${stackBar({ ...byG, ahorro: (byG.ahorro || 0) + payFirst, impuestos: income - afterTax }, Math.max(income, plan.total + payFirst + income - afterTax), free > 0 ? { v: free, label: 'Margen libre', color: 'var(--line)' } : null)}
+    </section>
+
+    <section class="card stack">
+      <h2>Regla 50/30/20</h2>
+      <p class="sub">Sobre tu ingreso después de impuestos (${fmt(afterTax)}): máximo 50% necesidades, 30% gustos, mínimo 20% ahorro.</p>
+      ${rule.map((r) => {
+        const p = afterTax > 0 ? r.v / afterTax : 0;
+        const ok = r.max ? p <= r.goal + 0.001 : p >= r.goal - 0.001;
+        return `<div class="stack" style="gap:6px">
+          <div class="row between small"><strong>${r.k}</strong><span class="num">${fmt(r.v)} · <strong>${pct(p)}</strong> <span class="${ok ? 'ok-ink' : 'warn-ink'}">${ok ? '✓' : '✗'} ${r.max ? 'máx' : 'mín'} ${pct(r.goal)}</span></span></div>
+          ${meter(p, { color: r.color })}
+        </div>`;
+      }).join('')}
+    </section>
+
+    <section class="stack">
+      <div class="row between"><h2>Sobres</h2><button class="btn sm" data-action="add-env">${sym('plus')} Agregar sobre</button></div>
+      <p class="small ink-2">Ordenados por prioridad: un pago llena primero los de arriba. Las metas y el fondo de emergencia se calculan solos.</p>
+      ${editor}
+    </section>`;
+}
+
+function envEditor(e, m) {
+  const auto = e.role === 'emergencia' || e.goal || (e.role === 'comida' && state.food.linked) || e.role === 'libre' || e.role === 'inversion';
+  const target = E.monthlyTarget(state, e, m);
+  const autoText = e.role === 'emergencia' ? 'Automático (fondo de emergencia)'
+    : e.goal ? 'Automático (según la meta)'
+    : e.role === 'comida' ? 'Automático (pestaña Comida)'
+    : 'Recibe el excedente';
+  return `<div class="env-edit">
+    <div class="row" style="align-items:flex-start">
+      <input class="input" style="width:40px;text-align:center;padding:0 4px" aria-label="Ícono" value="${esc(e.icon)}" ${envBind(e.id, 'icon', 'text')}>
+      <div class="stack" style="flex:1;gap:8px;min-width:0">
+        <input class="input" aria-label="Nombre del sobre" value="${esc(e.name)}" ${envBind(e.id, 'name', 'text')}>
+        ${auto ? `<div class="small ink-2">${autoText}${target ? `: <strong>${fmt(target)}</strong>/mes` : ''}</div>` : `<div class="row">${money(`aria-label="Monto mensual de ${esc(e.name)}" ${envBind(e.id, 'monthly')}`, e.monthly || '')}<span class="small muted" style="white-space:nowrap">/ mes${e.shared && target !== num(e.monthly) ? ` · tú: ${fmt(target)}` : ''}</span></div>`}
+        <div class="row" style="flex-wrap:wrap;gap:4px 16px">
+          ${e.role ? '' : `<label class="check"><span class="small">Grupo</span><span class="popup"><select class="input" ${envBind(e.id, 'group', 'text')}>${GROUP_ORDER.filter((g) => g !== 'impuestos').map((g) => `<option value="${g}" ${g === e.group ? 'selected' : ''}>${E.GROUPS[g].label}</option>`).join('')}</select></span></label>`}
+          ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.shared ? 'checked' : ''} ${envBind(e.id, 'shared', 'bool')}>Gasto del hogar</label>` : ''}
+          ${e.group === 'necesidad' ? `<label class="check"><input type="checkbox" ${e.pending ? 'checked' : ''} ${envBind(e.id, 'pending', 'bool')}>Aún no contratado</label>` : ''}
+          <label class="check"><span class="small">Prioridad</span><input class="input" type="number" min="1" max="99" style="width:56px" value="${esc(e.priority ?? 50)}" ${envBind(e.id, 'priority')}></label>
+          ${e.role ? '' : `<button class="btn ghost sm danger" data-action="del-env" data-id="${e.id}">Eliminar</button>`}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function viewComida() {
+  const f = state.food;
+  const t = E.foodTotals(f);
+  const tg = f.targets;
+  const macros = [
+    ['kcal', 'Calorías', 'kcal', 0.03], ['protein', 'Proteína', 'g', 0.03], ['fat', 'Grasas', 'g', 0.05],
+    ['carbs', 'Carbohidratos', 'g', 0.05], ['fiber', 'Fibra', 'g', 0],
+  ];
+  const cheap = f.items.filter((i) => i.protein >= 5 && num(i.price) > 0)
+    .map((i) => ({ name: i.name, cost: (num(i.price) / num(i.priceGrams || 1000)) * 100 / i.protein * 100 }))
+    .sort((a, b) => a.cost - b.cost).slice(0, 3);
+
+  return `<div class="page-head"><div><h1>Alimentación</h1><p>Tu plan diario de nutrición convertido en presupuesto de súper.</p></div></div>
+    <section class="card stack">
+      <h2>Metas diarias de nutrición</h2>
+      <p class="sub">Ajusta los gramos de cada alimento hasta que todo quede en ✓. Las metas se pueden editar.</p>
+      ${macros.map(([k, label, unit, tol]) => {
+        const v = t[k]; const goal = num(tg[k]);
+        const diff = v - goal;
+        const ok = k === 'fiber' ? v >= goal : Math.abs(diff) <= goal * tol || (k === 'protein' && diff >= 0 && diff <= goal * 0.08);
+        return `<div class="macro">
+          <label for="tg-${k}"><strong>${label}</strong> <span class="state ${ok ? 'ok-ink' : 'warn-ink'}">${ok ? '✓ en meta' : diff < 0 ? `faltan ${Math.round(-diff)} ${unit}` : `sobran ${Math.round(diff)} ${unit}`}</span></label>
+          <div class="vals num">${Math.round(v)} / <input id="tg-${k}" class="input" style="display:inline-block;width:72px;min-height:30px;padding:2px 6px" type="number" value="${esc(goal)}" aria-label="Meta de ${label}" ${bind(`food.targets.${k}`)}> ${unit}</div>
+          ${meter(goal ? v / goal : 0, { color: ok ? 'var(--g-ahorro)' : 'var(--g-profesional)' })}
+        </div>`;
+      }).join('')}
+    </section>
+
+    <section class="card stack">
+      <h2>Costo</h2>
+      <div class="stats">
+        <div class="stat"><div class="k">Por día</div><div class="v">${fmt(t.dailyCost)}</div></div>
+        <div class="stat"><div class="k">Al mes</div><div class="v">${fmt(t.monthlyCost)}</div></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label for="waste">Margen por merma</label>${percent(`id="waste" ${bind('food.wastePct')}`, f.wastePct)}<span class="help">Comida que se daña o sobra. 10% es razonable.</span></div>
+        <div class="field"><label for="extra">Extras al mes</label>${money(`id="extra" ${bind('food.extraMonthly')}`, f.extraMonthly)}<span class="help">Condimentos, café, salsas.</span></div>
+      </div>
+      <label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>
+      ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmt(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
+    </section>
+
+    <section class="card stack">
+      <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
+      <p class="sub">Pon los precios de tu súper. “Precio por” indica a cuánto corresponde el precio (1000 g = kg, 50 g = 1 huevo).</p>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Alimento</th><th class="r">g/día</th><th class="r">Precio</th><th class="r">Precio por (g)</th><th class="r">Costo/día</th><th></th></tr></thead>
+        <tbody>${f.items.map((it, i) => `<tr>
+          <td><div style="font-weight:600">${esc(it.name)}</div><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
+          <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
+          <td class="r"><input class="input num" style="width:80px" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(it.price)}" aria-label="Precio de ${esc(it.name)}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
+          <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="1" value="${esc(it.priceGrams)}" aria-label="Gramos que corresponden al precio" data-food="${i}" data-field="priceGrams" data-k="f:${i}:pg"></td>
+          <td class="r num">${fmt((num(it.grams) / num(it.priceGrams || 1000)) * num(it.price))}</td>
+          <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
+    </section>`;
+}
+
+function viewMas() {
+  const item = (view, ico, t, d) => `<button data-action="go" data-view="${view}"><span class="ico">${sym(ico)}</span><span><span class="t">${t}</span><br><span class="d">${d}</span></span><span class="chev">${sym('chevron.forward')}</span></button>`;
+  return `<div class="page-head"><div><h1>Más</h1></div></div>
+    <section class="card menu">
+      ${item('hogar', 'person.2', 'Hogar en pareja', 'Reparto justo de los gastos de la casa')}
+      ${item('consejos', 'lightbulb', 'Recomendaciones', 'Todo lo que la app detecta en tu plan')}
+      ${item('historial', 'clock.arrow.circlepath', 'Historial', 'Pagos recibidos y gastos')}
+      ${item('ajustes', 'gearshape', 'Ajustes y respaldo', 'Impuestos, moneda, exportar datos')}
+      ${item('guia', 'book', 'Cómo funciona', 'El método financiero detrás de la app')}
+    </section>`;
+}
+
+function viewHogar() {
+  const m = ui.month;
+  const p = state.partner;
+  const ps = E.partnerShare(state, m);
+  const shared = state.envelopes.filter((e) => e.shared);
+  const name = esc(p.name || 'Tu pareja');
+  return `<div class="page-head"><div><h1>Hogar en pareja</h1><p>Que la casa no pese sobre quien gana menos.</p></div></div>
+    <section class="card stack">
+      <div class="form-grid">
+        <div class="field"><label for="pn">Nombre</label><input id="pn" class="input" value="${esc(p.name)}" ${bind('partner.name', 'text')}></div>
+        <div class="field"><label for="pi">Su ingreso mensual</label>${money(`id="pi" ${bind('partner.income')}`, p.income)}</div>
+      </div>
+      <div class="choice" role="radiogroup" aria-label="Cómo repartir los gastos del hogar">
+        <label><input type="radio" name="mode" value="yo100" ${p.mode === 'yo100' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Yo cubro el 100% de la casa <span class="rec">(recomendado)</span></strong><span class="small ink-2">Si ganas bastante más, es lo más justo. Su dinero queda para su independencia y su propio ahorro.</span></span></label>
+        <label><input type="radio" name="mode" value="simbolico" ${p.mode === 'simbolico' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Aporte simbólico fijo</strong><span class="small ink-2">Si a ${name} le importa aportar, que sea un monto pequeño (máximo 10% de su ingreso).</span></span></label>
+        <label><input type="radio" name="mode" value="proporcional" ${p.mode === 'proporcional' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Proporcional al ingreso</strong><span class="small ink-2">Cada uno aporta el mismo porcentaje de lo que gana. Es el estándar de equidad cuando ambos ingresos son estables.</span></span></label>
+      </div>
+      ${p.mode === 'simbolico' ? `<div class="field"><label for="ps">Su aporte mensual</label>${money(`id="ps" ${bind('partner.symbolic')}`, p.symbolic)}<span class="help">Sugerido: ${fmt(num(p.income) * 0.1)} (10% de su ingreso).</span></div>` : ''}
+    </section>
+
+    <section class="card stack">
+      <h2>Quién paga qué</h2>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th></th><th class="r">Aporta</th><th class="r">% de su ingreso</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Tú</strong></td><td class="r num">${fmt(ps.myAmount)}</td><td class="r num">${pct(ps.myPctOfIncome)}</td></tr>
+          <tr><td><strong>${name}</strong></td><td class="r num">${fmt(ps.herAmount)}</td><td class="r num">${pct(ps.herPctOfIncome)}</td></tr>
+          <tr><td class="muted">Total gastos del hogar</td><td class="r num">${fmt(ps.sharedTotal)}</td><td></td></tr>
+        </tbody>
+      </table></div>
+      <div class="tipcard ${ps.herPctOfIncome > ps.myPctOfIncome + 0.001 ? 'warning' : 'good'}"><span class="ic">${sym(ps.herPctOfIncome > ps.myPctOfIncome + 0.001 ? 'exclamationmark.triangle.fill' : 'checkmark.circle.fill')}</span><div><strong>${ps.herPctOfIncome > ps.myPctOfIncome + 0.001 ? 'Ojo: le pesa más a ella' : 'Reparto justo'}</strong><p>Regla de equidad: quien gana menos nunca debería aportar un porcentaje mayor de su ingreso. Sugiérele que guarde al menos el 20% de lo que gana en un ahorro propio.</p></div></div>
+      <p class="small ink-2">Gastos marcados como “del hogar”: ${shared.map((e) => `${esc(e.icon)} ${esc(e.name)}`).join(', ') || 'ninguno'}. Cámbialos en la pestaña Plan.</p>
+    </section>`;
+}
+
+function viewHistorial() {
+  const m = ui.month;
+  const pays = state.payments.filter((p) => E.monthKey(p.date) === m).map((p) => ({ ...p, t: 'in' }));
+  const exps = state.expenses.filter((e) => E.monthKey(e.date) === m && e.kind !== 'transfer').map((e) => ({ ...e, t: 'out' }));
+  const items = [...pays, ...exps].sort((a, b) => b.date.localeCompare(a.date));
+  const byClient = {};
+  for (const p of pays.filter(E.isIncome)) byClient[p.client || 'Sin nombre'] = (byClient[p.client || 'Sin nombre'] || 0) + num(p.amount);
+
+  const row = (x) => {
+    if (x.t === 'in') {
+      const title = x.kind === 'saldo' ? 'Saldo inicial' : x.kind === 'transfer' ? 'Movimiento entre sobres' : esc(x.client || 'Pago');
+      return `<div class="mov">
+        <div><strong>${title}</strong><div class="meta">${dateLabel(x.date)}${x.note ? ` · ${esc(x.note)}` : ''}</div></div>
+        <div class="amt num ${E.isIncome(x) ? 'in' : ''}">+${fmt(x.amount)}<button class="icon-btn" data-action="del-pay" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
+        <details><summary>Ver reparto</summary>${Object.entries(x.alloc).map(([id, v]) => { const e = envById(id); return `<div class="step-line"><span class="l">${e ? `${esc(e.icon)} ${esc(e.name)}` : 'Sobre eliminado'}</span><span class="num">${fmt(v)}</span></div>`; }).join('')}</details>
+      </div>`;
+    }
+    const e = envById(x.envId);
+    return `<div class="mov">
+      <div><strong>${e ? `${esc(e.icon)} ${esc(e.name)}` : 'Sobre eliminado'}</strong><div class="meta">${dateLabel(x.date)}${x.note ? ` · ${esc(x.note)}` : ''}</div></div>
+      <div class="amt num">−${fmt(x.amount)}<button class="icon-btn" data-action="del-exp" data-id="${x.id}" aria-label="Borrar" title="Borrar">${sym('trash')}</button></div>
+    </div>`;
+  };
+
+  return `<div class="page-head"><div><h1>Historial</h1></div>${monthNav()}</div>
+    <section class="card stack">
+      <div class="stats">
+        <div class="stat"><div class="k">Ingresos</div><div class="v">${fmt(E.incomeInMonth(state, m))}</div></div>
+        <div class="stat"><div class="k">Gastos</div><div class="v">${fmt(sumBy(exps, (e) => num(e.amount)))}</div></div>
+      </div>
+      ${Object.keys(byClient).length ? `<div class="small ink-2">Por cliente: ${Object.entries(byClient).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<strong>${esc(c)}</strong> ${fmt(v)}`).join(' · ')}</div>` : ''}
+    </section>
+    <section class="card">${items.length ? items.map(row).join('') : '<p class="muted">Sin movimientos este mes.</p>'}</section>`;
+}
+
+const CURRENCIES = ['USD', 'EUR', 'MXN', 'DOP', 'COP', 'PEN', 'CLP', 'ARS', 'GTQ', 'HNL', 'NIO', 'CRC', 'PAB', 'BOB', 'PYG', 'UYU', 'VES', 'CUP'];
+
+function viewAjustes() {
+  const s = state.settings;
+  const theme = readTheme();
+  return `<div class="page-head"><div><h1>Ajustes</h1></div></div>
+    <section class="card stack">
+      <h2>Ingresos e impuestos</h2>
+      <div class="form-grid">
+        <div class="field"><label for="name">Tu nombre</label><input id="name" class="input" value="${esc(s.name || '')}" ${bind('settings.name', 'text')}></div>
+        <div class="field"><label for="cur">Moneda</label><span class="popup"><select id="cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+        <div class="field"><label for="inc">Ingreso mensual promedio</label>${money(`id="inc" ${bind('settings.incomeEstimate')}`, s.incomeEstimate || '')}<span class="help">Se usa hasta que tengas 1 mes de historial. Sé conservador.</span></div>
+        <div class="field"><label for="tax">Reserva para impuestos</label>${percent(`id="tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pregunta a un contador qué te corresponde como trabajador independiente.</span></div>
+        <div class="field"><label for="pf">Págate primero</label>${percent(`id="pf" ${bind('settings.payFirstPct')}`, s.payFirstPct)}<span class="help">Va al ahorro antes que cualquier gasto. 10% mínimo.</span></div>
+      </div>
+    </section>
+    <section class="card stack">
+      <h2>Fondo de emergencia</h2>
+      <div class="form-grid">
+        <div class="field"><label for="efm">Meses de necesidades</label><input id="efm" class="input" type="number" min="1" max="24" value="${esc(s.emergencyMonths)}" ${bind('settings.emergencyMonths')}><span class="help">Con ingresos variables: 6.</span></div>
+        <div class="field"><label for="efh">Completarlo en (meses)</label><input id="efh" class="input" type="number" min="1" max="60" value="${esc(s.emergencyHorizon)}" ${bind('settings.emergencyHorizon')}></div>
+      </div>
+    </section>
+    <section class="card stack">
+      <h2>Excedente</h2>
+      <p class="sub">Cuando un pago cubre todo el mes, lo que sobra se divide así (debe sumar 100%).</p>
+      <div class="form-grid">
+        <div class="field"><label for="se">Fondo de emergencia / inversión</label>${percent(`id="se" ${bind('settings.surplus.emergencia')}`, s.surplus.emergencia)}</div>
+        <div class="field"><label for="sm">Adelantar metas</label>${percent(`id="sm" ${bind('settings.surplus.metas')}`, s.surplus.metas)}</div>
+        <div class="field"><label for="sl">Dinero libre</label>${percent(`id="sl" ${bind('settings.surplus.libre')}`, s.surplus.libre)}</div>
+      </div>
+      ${num(s.surplus.emergencia) + num(s.surplus.metas) + num(s.surplus.libre) !== 100 ? '<p class="small warn-ink">⚠️ Los tres porcentajes deben sumar 100%. Lo que sobre irá a dinero libre.</p>' : ''}
+    </section>
+    <section class="card stack">
+      <h2>Apariencia</h2>
+      <div class="segmented" role="radiogroup" aria-label="Apariencia">
+        ${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([v, l]) => `<label><input type="radio" name="theme" value="${v}" ${theme === v ? 'checked' : ''} data-theme-pick><span>${l}</span></label>`).join('')}
+      </div>
+    </section>
+    <section class="card stack">
+      <h2>Sincronización</h2>
+      <p class="sub">Usa la app en la Mac y en el iPhone con los mismos datos. Se guardan cifrados en un repositorio privado de GitHub con una contraseña que solo tú conoces: ni GitHub puede leerlos.</p>
+      ${syncState.config ? `
+        <div class="row between" style="flex-wrap:wrap"><span>Repositorio: <strong>${esc(syncState.config.repo)}</strong></span><span id="sync-status" class="small ${syncState.error ? 'warn-ink' : 'ink-2'}">${esc(syncStatusText())}</span></div>
+        <div class="row" style="flex-wrap:wrap">
+          <button class="btn" data-action="sync-now">${sym('arrow.counterclockwise')} Sincronizar ahora</button>
+          <button class="btn destructive" data-action="sync-off">Desconectar…</button>
+        </div>` : `<div><button class="btn primary" data-action="open" data-modal="sync">Configurar sincronización…</button></div>`}
+    </section>
+    <section class="card stack">
+      <h2>Tus datos</h2>
+      <p class="sub">${isNative ? 'Tus datos se guardan en tu Mac (Archivo → Mostrar carpeta de datos), con una copia automática por día de los últimos 30 días.' : 'Todo se guarda solo en este dispositivo; nada sale a internet.'} Exporta un respaldo cada mes y guárdalo en un lugar seguro.</p>
+      <div class="actions">
+        <button class="btn" data-action="export">${sym('square.and.arrow.up')} Exportar respaldo…</button>
+        <label class="btn" for="import-file">${sym('square.and.arrow.down')} Importar respaldo…</label>
+      </div>
+      <input type="file" id="import-file" accept="application/json,.json" hidden>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn" data-action="replay-onb">${sym('arrow.counterclockwise')} Repetir configuración inicial</button>
+        <button class="btn destructive" data-action="reset">Borrar todos los datos…</button>
+      </div>
+    </section>`;
+}
+
+function viewGuia() {
+  return `<div class="page-head"><div><h1>Cómo funciona</h1><p>El método detrás de cada reparto.</p></div></div>
+    <section class="card guide">
+      <h3>1. Presupuesto en cascada por sobres</h3>
+      <p>Como tus ingresos llegan de clientes en montos y fechas variables, no sirve un porcentaje fijo para todo. Cada pago llena los sobres en orden de prioridad hasta cubrir lo que el mes necesita. Es el método que planificadores financieros recomiendan para trabajadores independientes.</p>
+      <ol>
+        <li><strong>Impuestos</strong> (${state.settings.taxPct}%): ese dinero no es tuyo; se aparta antes de todo.</li>
+        <li><strong>Págate primero</strong> (${state.settings.payFirstPct}%): el ahorro no es lo que sobra, es lo primero.</li>
+        <li><strong>Necesidades</strong>: renta, comida, servicios, internet, transporte y gimnasio (tu salud y tu entrenamiento son prioridad).</li>
+        <li><strong>Ahorro y metas</strong>: fondo de emergencia, Mac e iPhone con fecha.</li>
+        <li><strong>Imagen profesional</strong>: ropa, accesorios y cuidado personal. En tu medio son inversión, por eso tienen presupuesto propio.</li>
+        <li><strong>Gustos</strong>: salidas en pareja.</li>
+        <li><strong>Excedente</strong>: si un pago cubre todo, lo que sobra se reparte entre fondo de emergencia, adelantar metas y dinero libre.</li>
+      </ol>
+      <h3>2. Regla 50/30/20</h3>
+      <p>Popularizada por Elizabeth Warren en <em>All Your Worth</em>: del ingreso después de impuestos, hasta 50% a necesidades, hasta 30% a gustos y al menos 20% a ahorro. La app la usa como termómetro de tu plan.</p>
+      <h3>3. Fondo de emergencia de 6 meses</h3>
+      <p>La recomendación general es 3 a 6 meses de gastos esenciales; con ingresos variables se recomienda el extremo alto. Cuando tengas 1 mes completo, empieza a vivir con el dinero que entró el mes anterior: así un cliente que paga tarde ya no te afecta.</p>
+      <h3>4. Ahorro con fecha para compras grandes</h3>
+      <p>Para la Mac y el iPhone (tus herramientas de trabajo) se divide el precio entre los meses que faltan. Comprar al contado evita intereses; si hay una oferta de meses sin intereses, úsala solo si el dinero ya está en el sobre.</p>
+      <h3>5. Vivienda máximo 30%</h3>
+      <p>Una referencia clásica de asequibilidad: que la renta no pase del 30% de tus ingresos.</p>
+      <h3>6. Reparto justo del hogar</h3>
+      <p>El criterio de equidad más usado es que cada miembro aporte la misma proporción de su ingreso, nunca más. Con la diferencia actual de ingresos, cubrir tú el 100% es justo, y que tu pareja ahorre lo suyo fortalece a ambos.</p>
+      <h3>7. Internet</h3>
+      <p>Destina como máximo 3% de tu ingreso a internet (casa + móvil). Para crear y subir contenido importa más la velocidad de <strong>subida</strong> que la de bajada: busca fibra óptica con 50 Mbps de subida o más. Con Wi-Fi en casa puedes bajar tu plan móvil.</p>
+      <p class="tiny muted" style="margin-top:12px">Esta app es una herramienta de organización basada en reglas reconocidas de finanzas personales; no sustituye la asesoría fiscal o legal de un profesional en tu país.</p>
+    </section>`;
+}
+
+// ---------- Bienvenida ----------
+
+function viewOnb() {
+  const s = state.settings;
+  const env = (id) => envById(id) || {};
+  const step = ui.onbStep;
+  const field = (id, label, help = '') => `<div class="field"><label for="o-${id}">${label}</label>${money(`id="o-${id}" ${envBind(id, 'monthly')}`, env(id).monthly || '')}${help ? `<span class="help">${help}</span>` : ''}</div>`;
+  const steps = [
+    `<h1>Te damos la bienvenida</h1>
+     <p class="lead">Vamos a armar tu plan en 4 pasos. Cada vez que un cliente te pague, la app te dirá exactamente a dónde va cada peso.</p>
+     <div><button class="btn link" data-action="open" data-modal="sync" style="padding:0">¿Ya usas la app en otro dispositivo? Conectar sincronización…</button></div>
+     <div class="pill-list"><span>Reparto automático</span><span>Fondo de emergencia</span><span>Mac e iPhone</span><span>Súper según tu dieta</span><span>Hogar justo</span></div>
+     <div class="form-grid">
+       <div class="field"><label for="o-name">¿Cómo te llamas?</label><input id="o-name" class="input" value="${esc(s.name || '')}" ${bind('settings.name', 'text')}></div>
+       <div class="field"><label for="o-cur">Moneda</label><span class="popup"><select id="o-cur" class="input" ${bind('settings.currency', 'text')}>${CURRENCIES.map((c) => `<option ${c === s.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></span></div>
+       <div class="field"><label for="o-inc">Ingreso mensual promedio</label>${money(`id="o-inc" ${bind('settings.incomeEstimate')}`, s.incomeEstimate || '')}<span class="help">Usa un mes normal, no el mejor.</span></div>
+       <div class="field"><label for="o-tax">Reserva para impuestos</label>${percent(`id="o-tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pon 0 si no aplica en tu país.</span></div>
+     </div>`,
+    `<h1>Gastos del mes</h1>
+     <p class="lead">Lo que necesitas para vivir y trabajar. La comida de tu plan de nutrición se calcula sola en la pestaña Comida.</p>
+     <div class="form-grid">
+       ${field('renta', '🏠 Renta')}${field('hogar', '🛒 Súper y gastos del hogar', 'Lo que no es tu plan de comida: limpieza, comida de ella, etc.')}
+       ${field('servicios', '💡 Luz, agua y gas')}${field('internet', '📶 Internet de casa', 'Aún no lo tienes: pon lo que estimas pagar. Se ahorrará desde ya.')}
+       ${field('movil', '📱 Plan del móvil')}${field('taxis', '🚕 Taxis y transporte')}
+       ${field('gym', '🏋️ Gimnasio')}${field('salidas', '🍽️ Salidas en pareja')}
+     </div>`,
+    `<h1>Metas e imagen</h1>
+     <p class="lead">Tus herramientas de trabajo y tu imagen. Pon el precio y para cuándo lo quieres.</p>
+     <div class="form-grid">
+       <div class="field"><label for="o-mac">💻 Precio de la Mac</label>${money(`id="o-mac" ${envBind('mac', 'goal.target')}`, env('mac').goal?.target || '')}</div>
+       <div class="field"><label for="o-macd">Para</label><input id="o-macd" class="input" type="month" value="${esc(env('mac').goal?.date)}" ${envBind('mac', 'goal.date', 'text')}></div>
+       <div class="field"><label for="o-iph">📲 Precio del iPhone</label>${money(`id="o-iph" ${envBind('iphone', 'goal.target')}`, env('iphone').goal?.target || '')}</div>
+       <div class="field"><label for="o-iphd">Para</label><input id="o-iphd" class="input" type="month" value="${esc(env('iphone').goal?.date)}" ${envBind('iphone', 'goal.date', 'text')}></div>
+       ${field('ropa', '👔 Ropa y accesorios al mes', 'Sugerido 5–10% de tu ingreso; compra pocas piezas versátiles y de calidad.')}
+       ${field('cuidado', '💈 Cuidado personal al mes')}
+     </div>
+     <h2>¿Ya tienes algo ahorrado?</h2>
+     <div class="form-grid">
+       ${['emergencia', 'mac', 'iphone'].map((id) => `<div class="field"><label for="os-${id}">${esc(env(id).icon)} ${id === 'emergencia' ? 'Ahorros generales' : `Para ${id === 'mac' ? 'la Mac' : 'el iPhone'}`}</label>${money(`id="os-${id}" data-onb-saldo="${id}" data-k="os:${id}"`, ui.onbSaldo[id])}</div>`).join('')}
+     </div>`,
+    `<h1>Tu hogar</h1>
+     <p class="lead">Si ganas bastante más que tu pareja, lo justo es que cubras los gastos de la casa y que tu pareja use su dinero para su propio ahorro.</p>
+     <div class="form-grid">
+       <div class="field"><label for="o-pn">Nombre de tu pareja</label><input id="o-pn" class="input" value="${esc(state.partner.name)}" ${bind('partner.name', 'text')}></div>
+       <div class="field"><label for="o-pi">Su ingreso mensual</label>${money(`id="o-pi" ${bind('partner.income')}`, state.partner.income)}</div>
+     </div>
+     <div class="choice">
+       <label><input type="radio" name="o-mode" value="yo100" ${state.partner.mode === 'yo100' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Yo cubro la casa <span class="rec">Recomendado</span></strong><span class="small ink-2">Puedes cambiarlo cuando quieras en Más → Hogar.</span></span></label>
+       <label><input type="radio" name="o-mode" value="simbolico" ${state.partner.mode === 'simbolico' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Ella aporta algo simbólico</strong></span></label>
+       <label><input type="radio" name="o-mode" value="proporcional" ${state.partner.mode === 'proporcional' ? 'checked' : ''} ${bind('partner.mode', 'text')}><span><strong>Proporcional a lo que gana cada uno</strong></span></label>
+     </div>`,
+  ];
+  return `<div class="onb">
+    <div class="steps" aria-label="Paso ${step + 1} de 4">${[0, 1, 2, 3].map((i) => `<span class="${i <= step ? 'on' : ''}"></span>`).join('')}</div>
+    <section class="card stack">${steps[step]}</section>
+    <div class="onb-actions">
+      ${step > 0 ? '<button class="btn" data-action="onb-back">Atrás</button>' : ''}
+      <button class="btn primary" data-action="onb-next">${step < 3 ? 'Continuar' : 'Comenzar'}</button>
+    </div>
+  </div>`;
+}
+
+// ---------- Modales ----------
+
+const STAGE_TITLES = { impuestos: '1 · Impuestos', primero: '2 · Págate primero', mes: '3 · Lo que necesita el mes', excedente: '4 · Excedente' };
+
+function paymentPreview() {
+  const d = ui.draft;
+  const amount = num(d.amount);
+  if (amount <= 0) return '<p class="muted small">Escribe el monto para ver cómo se reparte.</p>';
+  const r = E.allocate(state, amount, d.date);
+  const byGroup = {};
+  for (const [id, v] of Object.entries(r.alloc)) { const g = envById(id).group; byGroup[g] = (byGroup[g] || 0) + v; }
+  const stages = {};
+  for (const st of r.steps) (stages[st.stage] ||= {})[st.envId] = ((stages[st.stage] || {})[st.envId] || 0) + st.amount;
+  return `${stackBar(byGroup, amount)}
+    ${Object.entries(STAGE_TITLES).filter(([k]) => stages[k]).map(([k, title]) => `<div class="step-title">${title}</div>
+      ${Object.entries(stages[k]).map(([id, v]) => { const e = envById(id); return `<div class="step-line"><span class="l"><i class="dot" style="background:var(--g-${e.group})"></i>${esc(e.icon)} ${esc(e.name)}</span><span class="num"><strong>${fmt(v)}</strong></span></div>`; }).join('')}`).join('')}`;
+}
+
+function envOptions(selected, { exclude } = {}) {
+  return GROUP_ORDER.map((g) => `<optgroup label="${E.GROUPS[g].label}">${state.envelopes.filter((e) => e.group === g && e.id !== exclude).map((e) => `<option value="${e.id}" ${e.id === selected ? 'selected' : ''}>${esc(e.icon)} ${esc(e.name)} — ${fmt(E.envelopeBalance(state, e.id))}</option>`).join('')}</optgroup>`).join('');
+}
+
+function modalHTML() {
+  const d = ui.draft;
+  const head = (t) => `<div class="sheet-head"><h2 id="sheet-title">${t}</h2></div>`;
+  const foot = (label, action) => `<div class="sheet-foot"><button class="btn" data-action="close">Cancelar</button><button class="btn primary" data-action="${action}">${label}</button></div>`;
+  const dateField = `<div class="field"><label for="d-date">Fecha</label><input id="d-date" class="input" type="date" value="${esc(d.date)}" data-draft="date"></div>`;
+  const noteField = (ph) => `<div class="field"><label for="d-note">Nota (opcional)</label><input id="d-note" class="input" value="${esc(d.note)}" placeholder="${ph}" data-draft="note"></div>`;
+  switch (ui.modal) {
+    case 'pago': {
+      const clients = [...new Set(state.payments.filter(E.isIncome).map((p) => p.client).filter(Boolean))];
+      return `${head('Recibí un pago')}
+        <div class="field"><label for="d-amount">¿Cuánto recibiste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount')}</div>
+        <div class="form-grid">
+          <div class="field"><label for="d-client">Cliente</label><input id="d-client" class="input" list="clients" value="${esc(d.client)}" data-draft="client" placeholder="Nombre del cliente"><datalist id="clients">${clients.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></div>
+          ${dateField}
+        </div>
+        <div class="card" style="background:var(--surface-2);box-shadow:none"><h3 style="margin-bottom:8px">Así se reparte</h3><div id="pay-preview">${paymentPreview()}</div></div>
+        ${foot('Repartir y guardar', 'save-pago')}`;
+    }
+    case 'gasto': {
+      const e = envById(d.envId);
+      const bal = e ? E.envelopeBalance(state, e.id) : 0;
+      return `${head('Registrar gasto')}
+        <div class="field"><label for="d-amount">¿Cuánto gastaste?</label>${money('id="d-amount" data-draft="amount" autofocus', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-env">¿De qué sobre sale?</label><span class="popup"><select id="d-env" class="input" data-draft="envId">${envOptions(d.envId)}</select></span>
+          <span class="help" id="exp-help">${e ? `Disponible: ${fmt(bal)}${num(d.amount) > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}` : ''}</span></div>
+        <div class="form-grid">${dateField}${noteField('Ej. súper semanal')}</div>
+        ${foot('Guardar gasto', 'save-gasto')}`;
+    }
+    case 'mover':
+      return `${head('Mover dinero entre sobres')}
+        <p class="small ink-2">Útil cuando un sobre se queda corto. Sacar del fondo de emergencia debería ser solo para emergencias reales.</p>
+        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-from">Desde</label><span class="popup"><select id="d-from" class="input" data-draft="from">${envOptions(d.from)}</select></span></div>
+        <div class="field"><label for="d-to">Hacia</label><span class="popup"><select id="d-to" class="input" data-draft="to">${envOptions(d.to)}</select></span></div>
+        ${foot('Mover', 'save-mover')}`;
+    case 'saldo':
+      return `${head('Registrar ahorro existente')}
+        <p class="small ink-2">Registra dinero que ya tenías antes de usar la app. No cuenta como ingreso del mes.</p>
+        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-env">Sobre</label><span class="popup"><select id="d-env" class="input" data-draft="envId">${envOptions(d.envId)}</select></span></div>
+        ${foot('Guardar', 'save-saldo')}`;
+    case 'sobre': {
+      const e = envById(d.id);
+      if (!e) return '';
+      const m = ui.month;
+      const movs = [
+        ...state.payments.filter((p) => p.alloc[e.id]).map((p) => ({ date: p.date, amt: p.alloc[e.id], label: p.kind === 'saldo' ? 'Saldo inicial' : p.kind === 'transfer' ? 'Movimiento' : (p.client || 'Pago') })),
+        ...state.expenses.filter((x) => x.envId === e.id).map((x) => ({ date: x.date, amt: -num(x.amount), label: x.note || 'Gasto' })),
+      ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12);
+      return `${head(`${esc(e.icon)} ${esc(e.name)}`)}
+        <div class="stats">
+          <div class="stat"><div class="k">Disponible</div><div class="v">${fmt(E.envelopeBalance(state, e.id))}</div></div>
+          <div class="stat"><div class="k">Necesita este mes</div><div class="v">${fmt(E.monthlyTarget(state, e, m))}</div></div>
+          <div class="stat"><div class="k">Gastado este mes</div><div class="v">${fmt(E.spentInMonth(state, e.id, m))}</div></div>
+        </div>
+        ${e.pending ? '<p class="small ink-2">Aún no contratado: lo que se acumula aquí cubrirá la instalación y el primer mes.</p>' : ''}
+        <div><h3 style="margin-bottom:4px">Últimos movimientos</h3><div class="group-box">${movs.length ? movs.map((x) => `<div class="mov"><div>${esc(x.label)}<div class="meta">${dateLabel(x.date)}</div></div><div class="amt num ${x.amt > 0 ? 'in' : ''}">${x.amt > 0 ? '+' : '−'}${fmt(Math.abs(x.amt))}</div></div>`).join('') : '<p class="muted small" style="padding:8px 12px">Aún no hay movimientos.</p>'}</div></div>
+        <div class="sheet-foot">
+          <button class="btn" data-action="open" data-modal="mover" data-from="${e.id}">Mover dinero…</button>
+          <span style="flex:1"></span>
+          <button class="btn" data-action="open" data-modal="gasto" data-env="${e.id}">Registrar gasto…</button>
+          <button class="btn primary" data-action="close">Listo</button>
+        </div>`;
+    }
+    case 'sync':
+      return `${head('Configurar sincronización')}
+        <p class="small ink-2">Necesitas un repositorio <strong>privado</strong> de GitHub y un token con permiso de <em>Contenido: lectura y escritura</em> solo para ese repositorio. Usa los mismos datos en cada dispositivo.</p>
+        <div class="field"><label for="s-repo">Repositorio</label><input id="s-repo" class="input" placeholder="usuario/repositorio" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(d.repo)}" data-draft="repo"></div>
+        <div class="field"><label for="s-token">Token de GitHub</label><input id="s-token" class="input" type="password" autocomplete="off" placeholder="github_pat_…" value="${esc(d.token)}" data-draft="token"></div>
+        <div class="field"><label for="s-pass">Contraseña de cifrado</label><input id="s-pass" class="input" type="password" autocomplete="new-password" value="${esc(d.passphrase)}" data-draft="passphrase">
+          <span class="help">Mínimo 8 caracteres. Si la olvidas, los datos sincronizados no se pueden recuperar (los de cada dispositivo siguen ahí).</span></div>
+        <p id="sync-msg" class="small warn-ink" role="status"></p>
+        ${foot('Conectar', 'save-sync')}`;
+    case 'alimento':
+      return `${head('Agregar alimento')}
+        <p class="small ink-2">Copia los valores por 100 g de la etiqueta o de tu app de nutrición.</p>
+        <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" data-draft="name" value="${esc(d.name)}"></div>
+        <div class="form-grid">
+          ${[['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)'], ['grams', 'Gramos al día'], ['price', 'Precio'], ['priceGrams', 'Gramos de ese precio']]
+            .map(([k, l]) => `<div class="field"><label for="a-${k}">${l}</label><input id="a-${k}" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="${k}" value="${esc(d[k])}"></div>`).join('')}
+        </div>
+        ${foot('Agregar', 'save-alimento')}`;
+    default:
+      return '';
+  }
+}
+
+function openModal(name, data = {}) {
+  ui.modal = name;
+  const base = { date: E.todayISO(), amount: '', note: '', client: '' };
+  if (name === 'gasto') base.envId = data.env || 'comida';
+  if (name === 'mover') { base.from = data.from || 'libre'; base.to = state.envelopes.find((e) => e.id !== base.from)?.id; }
+  if (name === 'saldo') base.envId = 'emergencia';
+  if (name === 'sobre') base.id = data.id;
+  if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
+  if (name === 'alimento') Object.assign(base, { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceGrams: 1000 });
+  ui.draft = base;
+  renderModal();
+  setTimeout(() => $modal.querySelector('[autofocus], input, select')?.focus(), 50);
+}
+function closeModal() {
+  ui.modal = null;
+  renderModal();
+}
+function renderModal() {
+  if (!ui.modal) { $modal.innerHTML = ''; document.body.style.overflow = ''; return; }
+  $modal.innerHTML = `<div class="backdrop"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">${modalHTML()}</div></div>`;
+  document.body.style.overflow = 'hidden';
+}
+
+// ---------- Render principal ----------
+
+const NAV = [['inicio', 'house', 'Inicio'], ['metas', 'target', 'Metas'], ['plan', 'chart.pie', 'Plan'], ['comida', 'fork.knife', 'Comida'], ['mas', 'ellipsis.circle', 'Más']];
+// Títulos cortos para la barra de herramientas de macOS (HIG: menos de 15 caracteres).
+const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
+const MONTH_VIEWS = ['inicio', 'plan', 'historial', 'consejos'];
+const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, comida: viewComida, mas: viewMas, hogar: viewHogar, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
+
+function render() {
+  const active = document.activeElement?.dataset?.k;
+  let caret = null;
+  try { caret = document.activeElement.selectionStart; } catch { /* inputs numéricos */ }
+
+  if (isNative && ui.view === 'mas') ui.view = 'inicio';
+  if (!state.onboarded) {
+    $app.innerHTML = viewOnb();
+    postNative({ type: 'ui', view: '', title: 'Bienvenida', subtitle: `Paso ${ui.onbStep + 1} de 4`, onboarded: false });
+  } else {
+    const view = VIEWS[ui.view] ? ui.view : 'inicio';
+    postNative({ type: 'ui', view, title: VIEW_TITLES[view], subtitle: MONTH_VIEWS.includes(view) ? monthLabel(ui.month) : '', onboarded: true });
+    const tab = NAV.some(([v]) => v === view) ? view : 'mas';
+    $app.innerHTML = `<div class="shell">
+      <nav class="nav" aria-label="Secciones">
+        <div class="brand"><img src="icons/icon.svg" alt="">Mis Finanzas</div>
+        ${NAV.map(([v, ico, label]) => `<button data-action="go" data-view="${v}" ${v === tab ? 'aria-current="page"' : ''}><span class="ico">${sym(ico)}</span>${label}</button>`).join('')}
+      </nav>
+      <main>${VIEWS[view]()}</main>
+    </div>`;
+  }
+  if (active) {
+    const el = $app.querySelector(`[data-k="${CSS.escape(active)}"]`);
+    if (el) { el.focus({ preventScroll: true }); try { if (caret != null) el.setSelectionRange(caret, caret); } catch { /* */ } }
+  }
+}
+
+// ---------- Eventos ----------
+
+function setPath(obj, path, value) {
+  const keys = path.split('.');
+  let o = obj;
+  for (const k of keys.slice(0, -1)) o = o[k] ||= {};
+  o[keys.at(-1)] = value;
+}
+function readValue(el) {
+  if (el.dataset.type === 'bool') return el.checked;
+  if (el.dataset.type === 'number') return num(el.value);
+  return el.value;
+}
+
+document.addEventListener('change', (ev) => {
+  const el = ev.target;
+  if (el.dataset.bind) {
+    setPath(state, el.dataset.bind, readValue(el));
+    const section = el.dataset.bind.split('.')[0];
+    if (['settings', 'partner', 'food'].includes(section)) touch(section);
+    persist();
+    scheduleRender();
+  } else if (el.dataset.env) {
+    const e = envById(el.dataset.env);
+    if (!e) return;
+    let v = readValue(el);
+    if (el.dataset.field === 'name' && !String(v).trim()) v = e.name;
+    setPath(e, el.dataset.field, v);
+    e.updatedAt = Date.now();
+    persist();
+    scheduleRender();
+  } else if (el.dataset.food) {
+    state.food.items[Number(el.dataset.food)][el.dataset.field] = num(el.value);
+    touch('food');
+    persist();
+    scheduleRender();
+  } else if (el.dataset.onbSaldo) {
+    ui.onbSaldo[el.dataset.onbSaldo] = el.value;
+  } else if (el.matches('[data-theme-pick]')) {
+    applyTheme(el.value);
+  } else if (el.id === 'import-file' && el.files[0]) {
+    importBackup(el.files[0]);
+    el.value = '';
+  } else if (el.dataset.draft && ui.modal === 'gasto' && el.dataset.draft === 'envId') {
+    ui.draft.envId = el.value;
+    renderModal();
+  }
+});
+
+document.addEventListener('input', (ev) => {
+  const el = ev.target;
+  if (!el.dataset.draft) return;
+  ui.draft[el.dataset.draft] = el.value;
+  if (ui.modal === 'pago' && (el.dataset.draft === 'amount' || el.dataset.draft === 'date')) {
+    document.getElementById('pay-preview').innerHTML = paymentPreview();
+  }
+  if (ui.modal === 'gasto' && el.dataset.draft === 'amount') {
+    const e = envById(ui.draft.envId);
+    const bal = e ? E.envelopeBalance(state, e.id) : 0;
+    document.getElementById('exp-help').textContent = `Disponible: ${fmt(bal)}${num(el.value) > bal ? ' · ⚠️ No alcanza: mueve dinero de otro sobre (no del fondo de emergencia, salvo una emergencia real).' : ''}`;
+  }
+});
+
+const ACTIONS = {
+  go: (el) => { ui.view = el.dataset.view; render(); window.scrollTo(0, 0); },
+  month: (el) => { ui.month = E.addMonths(ui.month, Number(el.dataset.d)); render(); },
+  open: (el) => openModal(el.dataset.modal, el.dataset),
+  close: closeModal,
+  'save-pago': () => {
+    const d = ui.draft; const amount = num(d.amount);
+    if (amount <= 0) return toast('Escribe un monto mayor a 0');
+    if (!d.date) return toast('Elige una fecha');
+    const r = E.allocate(state, amount, d.date);
+    state.payments.push({ id: E.uid(), kind: 'pago', date: d.date, amount, client: (d.client || '').trim(), note: d.note || '', alloc: r.alloc });
+    ui.month = E.monthKey(d.date);
+    closeModal(); commit(`Repartido ${fmt(amount)} ✓`);
+  },
+  'save-gasto': () => {
+    const d = ui.draft; const amount = num(d.amount);
+    if (amount <= 0) return toast('Escribe un monto mayor a 0');
+    state.expenses.push({ id: E.uid(), date: d.date, envId: d.envId, amount, note: d.note || '' });
+    closeModal(); commit('Gasto guardado ✓');
+  },
+  'save-mover': () => {
+    const d = ui.draft; const amount = num(d.amount);
+    if (amount <= 0 || d.from === d.to) return toast('Elige un monto y dos sobres distintos');
+    const from = envById(d.from); const to = envById(d.to);
+    const pair = E.uid();
+    state.expenses.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, envId: d.from, amount, note: `Movido a ${to.name}` });
+    state.payments.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, amount, client: '', note: `Desde ${from.name}`, alloc: { [d.to]: amount } });
+    closeModal(); commit('Dinero movido ✓');
+  },
+  'save-saldo': () => {
+    const d = ui.draft; const amount = num(d.amount);
+    if (amount <= 0) return toast('Escribe un monto mayor a 0');
+    state.payments.push({ id: E.uid(), kind: 'saldo', date: d.date, amount, client: '', note: 'Saldo inicial', alloc: { [d.envId]: amount } });
+    closeModal(); commit('Saldo registrado ✓');
+  },
+  'save-alimento': () => {
+    const d = ui.draft;
+    if (!d.name.trim()) return toast('Escribe el nombre del alimento');
+    state.food.items.push({ id: E.uid(), name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceGrams: num(d.priceGrams) || 1000 });
+    closeModal(); commit('Alimento agregado ✓');
+  },
+  'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
+  'del-pay': (el) => {
+    const pay = state.payments.find((p) => p.id === el.dataset.id);
+    if (!pay || !confirm('¿Borrar este movimiento y su reparto?')) return;
+    state.payments = state.payments.filter((p) => p.id !== pay.id);
+    markDeleted(pay.id);
+    // Un movimiento entre sobres tiene dos mitades: se borran juntas.
+    if (pay.pair) {
+      markDeleted(...state.expenses.filter((x) => x.pair === pay.pair).map((x) => x.id));
+      state.expenses = state.expenses.filter((x) => x.pair !== pay.pair);
+    }
+    commit('Movimiento borrado');
+  },
+  'del-exp': (el) => { if (confirm('¿Borrar este gasto?')) { state.expenses = state.expenses.filter((x) => x.id !== el.dataset.id); markDeleted(el.dataset.id); commit('Gasto borrado'); } },
+  'del-env': (el) => {
+    const e = envById(el.dataset.id);
+    const bal = E.envelopeBalance(state, e.id);
+    if (bal > 0) return toast(`Primero mueve los ${fmt(bal)} de este sobre a otro`);
+    if (confirm(`¿Eliminar “${e.name}”?`)) { state.envelopes = state.envelopes.filter((x) => x.id !== e.id); markDeleted(e.id); commit('Sobre eliminado'); }
+  },
+  'add-env': () => {
+    state.envelopes.push({ id: E.uid(), name: 'Nuevo sobre', icon: '✨', group: 'gusto', monthly: 0, priority: 10, updatedAt: Date.now() });
+    commit('Sobre agregado al final de Gustos');
+  },
+  'add-goal': () => {
+    state.envelopes.push({ id: E.uid(), name: 'Nueva meta', icon: '🎯', group: 'ahorro', monthly: 0, priority: 5, goal: { target: 0, date: E.addMonths(E.monthKey(new Date()), 11) }, updatedAt: Date.now() });
+    commit('Meta creada: ponle precio y fecha. Cambia el nombre en Plan.');
+  },
+  'onb-next': () => {
+    if (ui.onbStep < 3) { ui.onbStep += 1; render(); window.scrollTo(0, 0); return; }
+    for (const [id, v] of Object.entries(ui.onbSaldo)) {
+      if (num(v) > 0 && envById(id)) state.payments.push({ id: E.uid(), kind: 'saldo', date: E.todayISO(), amount: num(v), client: '', note: 'Saldo inicial', alloc: { [id]: num(v) } });
+    }
+    ui.onbSaldo = { emergencia: '', mac: '', iphone: '' };
+    state.onboarded = true; touch('onboarded'); ui.view = 'inicio';
+    commit('¡Tu plan está listo!');
+  },
+  'onb-back': () => { ui.onbStep -= 1; render(); },
+  'save-sync': async (el) => {
+    const d = ui.draft;
+    const config = { repo: (d.repo || '').trim(), token: (d.token || '').trim(), passphrase: d.passphrase || '' };
+    const msg = document.getElementById('sync-msg');
+    const say = (text, ok = false) => { msg.textContent = text; msg.className = `small ${ok ? 'ink-2' : 'warn-ink'}`; };
+    if (!config.repo || !config.token || config.passphrase.length < 8) return say('Completa los tres campos; la contraseña debe tener al menos 8 caracteres.');
+    el.disabled = true;
+    say('Conectando…', true);
+    try {
+      await Sync.checkRepo(config);
+      const adoptRemote = !Sync.hasMovements(state);
+      const result = await Sync.synchronize(state, config, { device: DEVICE, adoptRemote });
+      state = migrate(result.state);
+      save(state);
+      saveSyncConfig(config);
+      Object.assign(syncState, { config, last: result.waiting ? null : result.at, error: '', waiting: Boolean(result.waiting) });
+      closeModal();
+      render();
+      toast(result.waiting ? 'Conectado. Se sincronizará cuando haya datos en algún dispositivo.' : 'Sincronización activada ✓');
+    } catch (err) {
+      el.disabled = false;
+      say(err?.message || String(err));
+    }
+  },
+  'sync-now': () => runSync(),
+  'sync-off': () => {
+    if (!confirm('¿Desconectar la sincronización en este dispositivo? Tus datos locales se conservan.')) return;
+    saveSyncConfig(null);
+    syncState.config = null;
+    render();
+    toast('Sincronización desactivada');
+  },
+  export: () => { exportFile(state); if (!isNative) toast('Respaldo descargado'); },
+  'replay-onb': () => { state.onboarded = false; touch('onboarded'); ui.onbStep = 0; commit(); },
+  reset: () => {
+    if (!confirm('Esto borra todos tus pagos, gastos y ajustes de este dispositivo y desconecta la sincronización (los datos sincronizados no se tocan). ¿Exportaste un respaldo?')) return;
+    saveSyncConfig(null); syncState.config = null;
+    state = defaultState(); ui.onbStep = 0; ui.view = 'inicio'; commit('Datos borrados');
+  },
+};
+
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-action]');
+  if (!el) return;
+  const fn = ACTIONS[el.dataset.action];
+  if (fn) fn(el, ev);
+});
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && ui.modal) closeModal();
+  if (ev.key === 'Enter' && ui.modal && ev.target.tagName === 'INPUT') {
+    const btn = $modal.querySelector('.sheet-foot .btn.primary');
+    if (btn) { ev.preventDefault(); btn.click(); }
+  }
+});
+
+// Órdenes desde la barra lateral, la barra de herramientas y los menús de la app de Mac.
+window.nativeAPI = {
+  go: (view) => { if (!state.onboarded) return; ui.modal = null; renderModal(); ui.view = view; render(); window.scrollTo(0, 0); },
+  open: (modal) => { if (state.onboarded) openModal(modal); },
+  month: (delta) => { ui.month = E.addMonths(ui.month, delta); render(); if (ui.modal === 'sobre') renderModal(); },
+};
+
+async function importBackup(file) {
+  try {
+    const data = migrate(JSON.parse(await file.text()));
+    if (!confirm('Esto reemplaza los datos actuales con los del respaldo. ¿Continuar?')) return;
+    state = data;
+    commit('Respaldo importado ✓');
+  } catch {
+    toast('Ese archivo no es un respaldo válido');
+  }
+}
+
+// ---------- Tema ----------
+
+function readTheme() {
+  try { return localStorage.getItem('economia:theme') || 'auto'; } catch { return 'auto'; }
+}
+function applyTheme(v) {
+  try { localStorage.setItem('economia:theme', v); } catch { /* sin almacenamiento */ }
+  if (v === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.dataset.theme = v;
+  postNative({ type: 'theme', value: v });
+}
+applyTheme(readTheme());
+
+render();
+
+// Sincroniza al abrir, al volver a la app, al recuperar la conexión y cada minuto mientras está visible.
+if (syncState.config) runSync();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(300); });
+window.addEventListener('online', () => scheduleSync(300));
+setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 60000);
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
