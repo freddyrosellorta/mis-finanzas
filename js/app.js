@@ -80,12 +80,63 @@ function dateLabel(d) {
   return new Date(d + 'T12:00:00').toLocaleDateString('es', { day: 'numeric', month: 'short' });
 }
 
-function toast(msg) {
-  $toast.textContent = msg;
+// Aviso breve; con `action` ({ label, run }) muestra un botón (p. ej. Deshacer) y dura más.
+function toast(msg, action = null) {
+  $toast.innerHTML = '';
+  const text = document.createElement('span');
+  text.textContent = msg;
+  $toast.appendChild(text);
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-btn';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => { $toast.classList.remove('show'); action.run(); });
+    $toast.appendChild(btn);
+  }
+  $toast.classList.toggle('actionable', Boolean(action));
   $toast.classList.add('show');
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => $toast.classList.remove('show'), 2600);
+  toast.t = setTimeout(() => $toast.classList.remove('show'), action ? 7000 : 2600);
 }
+
+// ---------- Papelera ----------
+// Lo borrado se guarda 30 días en `state.trash` para deshacer o restaurar.
+const TRASH_KINDS = { pago: 'Pago', gasto: 'Gasto', sobre: 'Sobre', alimento: 'Alimento', producto: 'Producto del pedido' };
+function toTrash(kind, label, item, extra = {}) {
+  const entry = { id: E.uid(), kind, label, at: Date.now(), item: structuredClone(item), extra };
+  (state.trash ||= []).unshift(entry);
+  return entry;
+}
+function restoreTrash(entryId) {
+  const entry = (state.trash || []).find((t) => t.id === entryId);
+  if (!entry) return;
+  const now = Date.now();
+  const revive = (...ids) => { state.restored ||= {}; for (const id of ids) state.restored[id] = now; };
+  const insertAt = (list, item, index) => list.splice(Math.min(Number(index) || 0, list.length), 0, item);
+  const { item, extra } = entry;
+  if (entry.kind === 'pago') {
+    state.payments.push(item);
+    for (const x of extra.expenses || []) state.expenses.push(x);
+    revive(item.id, ...(extra.expenses || []).map((x) => x.id));
+  } else if (entry.kind === 'gasto') {
+    state.expenses.push(item);
+    revive(item.id);
+  } else if (entry.kind === 'sobre') {
+    insertAt(state.envelopes, { ...item, updatedAt: now }, extra.index);
+    revive(item.id);
+  } else if (entry.kind === 'alimento') {
+    insertAt(state.food.items, item, extra.index);
+    touch('food');
+  } else if (entry.kind === 'producto') {
+    const env = envById(extra.envId) || orderEnvelope();
+    if (!env) return toast('El pedido familiar ya no existe; restaura primero su sobre.');
+    insertAt(env.order.items, item, extra.index);
+    env.updatedAt = now;
+  }
+  state.trash = state.trash.filter((t) => t.id !== entryId);
+  commit(`${TRASH_KINDS[entry.kind]} restaurado ✓`);
+}
+const undoable = (entry, message) => commit() || toast(message, { label: 'Deshacer', run: () => restoreTrash(entry.id) });
 
 function persist() {
   state.updatedAt = Date.now();
@@ -117,6 +168,63 @@ const DEVICE = isNative ? 'Mac' : /iPhone|iPad/.test(navigator.userAgent) ? 'iPh
 const syncState = { config: loadSyncConfig(), busy: false, again: false, last: null, error: '' };
 let syncTimer = null;
 
+// Copia de seguridad local antes de cualquier reemplazo de datos (Mac: carpeta de copias; navegador: últimas 5).
+const LOCAL_BACKUPS_KEY = 'economia:copias';
+function backupLocal(label, data = state) {
+  const text = JSON.stringify(data, null, 2);
+  if (isNative) { postNative({ type: 'backup', label, data: text }); return; }
+  try {
+    const list = JSON.parse(localStorage.getItem(LOCAL_BACKUPS_KEY) || '[]');
+    list.unshift({ label, at: Date.now(), data: text });
+    localStorage.setItem(LOCAL_BACKUPS_KEY, JSON.stringify(list.slice(0, 5)));
+  } catch { /* sin almacenamiento: la copia no se guarda */ }
+}
+
+// Lista de copias disponibles: en la Mac, la carpeta de copias; en el navegador, las guardadas localmente.
+async function loadBackupList() {
+  let list = [];
+  try {
+    if (isNative) list = await window.webkit.messageHandlers.storeReply.postMessage({ type: 'list-backups' });
+    else list = JSON.parse(localStorage.getItem(LOCAL_BACKUPS_KEY) || '[]').map((c, i) => ({ label: c.label, at: c.at, local: i }));
+  } catch { list = []; }
+  if (ui.modal === 'copias') { ui.draft.list = list || []; renderModal(); }
+}
+async function readBackup(entry) {
+  if (isNative) return window.webkit.messageHandlers.storeReply.postMessage({ type: 'read-backup', name: entry.name });
+  return JSON.parse(localStorage.getItem(LOCAL_BACKUPS_KEY) || '[]')[entry.local]?.data;
+}
+
+// Restaura una copia como versión definitiva: lo que no está en la copia se marca borrado y lo que está,
+// restaurado; las secciones toman la fecha actual. Así la sincronización deja todos los dispositivos igual.
+function applyRestore(snapshot, message = 'Copia restaurada ✓') {
+  backupLocal('antes-de-restaurar');
+  const now = Date.now();
+  const snap = migrate(snapshot);
+  const kept = [...snap.payments, ...snap.expenses, ...snap.envelopes];
+  const keepIds = new Set(kept.map((x) => x.id));
+  const deleted = { ...(state.deleted || {}), ...(snap.deleted || {}) };
+  const restored = { ...(state.restored || {}), ...(snap.restored || {}) };
+  for (const x of [...state.payments, ...state.expenses, ...state.envelopes]) if (!keepIds.has(x.id)) deleted[x.id] = now;
+  for (const id of keepIds) restored[id] = now;
+  for (const env of snap.envelopes) env.updatedAt = now;
+  state = { ...snap, deleted, restored, trash: state.trash || [], meta: { settings: now, partner: now, food: now, onboarded: now } };
+  closeModal();
+  commit(message);
+}
+
+// Conecta la sincronización con la preferencia elegida (combinar, usar los locales o los sincronizados).
+async function connectSync(config, prefer) {
+  backupLocal('antes-de-sincronizar');
+  const result = await Sync.synchronize(state, config, { device: DEVICE, prefer });
+  state = migrate(result.state);
+  save(state);
+  saveSyncConfig(config);
+  Object.assign(syncState, { config, last: result.waiting ? null : result.at, error: '', waiting: Boolean(result.waiting) });
+  closeModal();
+  render();
+  toast(result.waiting ? 'Conectado. Se sincronizará cuando haya datos en algún dispositivo.' : 'Sincronización activada ✓');
+}
+
 function scheduleSync(delay = 2000) {
   if (!syncState.config) return;
   clearTimeout(syncTimer);
@@ -130,7 +238,9 @@ async function runSync() {
   refreshSyncStatus();
   const startedAt = state.updatedAt;
   try {
+    const before = state;
     const result = await Sync.synchronize(state, syncState.config, { device: DEVICE });
+    if (result.adopted) backupLocal('antes-de-adoptar', before);
     if (state.updatedAt !== startedAt) {
       // Hubo cambios mientras se sincronizaba: se fusionan y se vuelve a subir.
       state = migrate(Sync.mergeStates(state, result.state));
@@ -408,7 +518,7 @@ function viewPlan() {
       <div class="env-list">${envs.map((e) => envEditor(e, m)).join('')}</div>`;
   }).join('');
 
-  return `<div class="page-head"><div><h1>Plan mensual</h1><p>Cuánto necesita cada sobre al mes. Los pagos se reparten en este orden.</p></div>${monthNav()}</div>
+  return `<div class="page-head"><div><h1>Plan mensual</h1><p>Cuánto necesita cada sobre al mes. Cada pago completa primero lo que vence pronto y luego avanza todas las necesidades a la par.</p></div>${monthNav()}</div>
     <section class="card stack">
       <div class="stats">
         <div class="stat"><div class="k">Ingreso de referencia</div><div class="v">${fmt(income)}</div></div>
@@ -434,7 +544,7 @@ function viewPlan() {
 
     <section class="stack">
       <div class="row between"><h2>Sobres</h2><button class="btn sm" data-action="add-env">${sym('plus')} Agregar sobre</button></div>
-      <p class="small ink-2">Ordenados por prioridad: un pago llena primero los de arriba. Las metas y el fondo de emergencia se calculan solos.</p>
+      <p class="small ink-2">Las necesidades reciben dinero a la par; con “Se paga el día” un sobre se completa primero cuando su fecha está cerca. Las metas y el fondo de emergencia se calculan solos.</p>
       ${editor}
     </section>`;
 }
@@ -757,6 +867,12 @@ function viewAjustes() {
       </div>
     </section>
     <section class="card stack">
+      <h2>Papelera</h2>
+      <p class="sub">Lo que borras se guarda aquí 30 días. Puedes restaurarlo con todo su reparto.</p>
+      ${(state.trash || []).length ? `<div class="group-box">${state.trash.map((t) => `<div class="mov"><div><strong>${esc(t.label)}</strong><div class="meta">${TRASH_KINDS[t.kind]} · borrado ${new Date(t.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div></div><div class="amt"><button class="btn sm" data-action="trash-restore" data-id="${t.id}">Restaurar</button></div></div>`).join('')}</div>
+        <div><button class="btn sm destructive" data-action="trash-empty">Vaciar papelera…</button></div>` : '<p class="muted">La papelera está vacía.</p>'}
+    </section>
+    <section class="card stack">
       <h2>Sincronización</h2>
       <p class="sub">Usa la app en la Mac y en el iPhone con los mismos datos. Se guardan cifrados en un repositorio privado de GitHub con una contraseña que solo tú conoces: ni GitHub puede leerlos.</p>
       ${syncState.config ? `
@@ -772,6 +888,7 @@ function viewAjustes() {
       <div class="actions">
         <button class="btn" data-action="export">${sym('square.and.arrow.up')} Exportar respaldo…</button>
         <label class="btn" for="import-file">${sym('square.and.arrow.down')} Importar respaldo…</label>
+        <button class="btn" data-action="open" data-modal="copias">${sym('clock.arrow.circlepath')} Restaurar una copia…</button>
       </div>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
       <div class="row" style="flex-wrap:wrap">
@@ -976,6 +1093,24 @@ function modalHTML() {
         </div>`;
     }
     case 'sync':
+      if (d.step === 'elegir') {
+        const when = (t) => (t > 1e12 ? new Date(t).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
+        const rows = [['Pagos', 'pagos'], ['Gastos', 'gastos'], ['Sobres', 'sobres'], ['Alimentos del menú', 'alimentos'], ['Productos del pedido familiar', 'productos']];
+        const option = (mode, title, text, primary = false) => `<button class="sync-option ${primary ? 'primary' : ''}" data-action="sync-choose" data-mode="${mode}"><strong>${title}</strong><span>${text}</span></button>`;
+        return `${head('Ya hay datos sincronizados')}
+          <p class="small ink-2">Este dispositivo y la copia sincronizada tienen datos. Elige qué hacer; antes de cambiar nada se guarda una copia de los datos de este dispositivo.</p>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th></th><th class="r">Este dispositivo</th><th class="r">Sincronizados</th></tr></thead>
+            <tbody>${rows.map(([label, k]) => `<tr><td>${label}</td><td class="r num">${d.local[k]}</td><td class="r num">${d.remote[k]}</td></tr>`).join('')}
+              <tr><td>Última modificación</td><td class="r">${when(d.local.modificado)}</td><td class="r">${when(d.remote.modificado)}</td></tr></tbody>
+          </table></div>
+          <div class="stack" style="gap:8px">
+            ${option('merge', 'Combinar (recomendado)', 'Une los dos: no se pierde nada. Si un ajuste cambió en ambos, gana el más reciente.', true)}
+            ${option('local', 'Usar los de este dispositivo', 'Reemplaza la copia sincronizada; los otros dispositivos recibirán esta versión.')}
+            ${option('remote', 'Usar los sincronizados', 'Reemplaza los datos de este dispositivo (se guarda una copia antes).')}
+          </div>
+          <div class="sheet-foot"><button class="btn" data-action="close">Cancelar</button></div>`;
+      }
       return `${head('Configurar sincronización')}
         <p class="small ink-2">Necesitas un repositorio <strong>privado</strong> de GitHub y un token con permiso de <em>Contenido: lectura y escritura</em> solo para ese repositorio. Usa los mismos datos en cada dispositivo.</p>
         <div class="field"><label for="s-repo">Repositorio</label><input id="s-repo" class="input" placeholder="usuario/repositorio" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(d.repo)}" data-draft="repo"></div>
@@ -984,6 +1119,15 @@ function modalHTML() {
           <span class="help">Mínimo 8 caracteres. Si la olvidas, los datos sincronizados no se pueden recuperar (los de cada dispositivo siguen ahí).</span></div>
         <p id="sync-msg" class="small warn-ink" role="status"></p>
         ${foot('Conectar', 'save-sync')}`;
+    case 'copias': {
+      const when = (t) => new Date(t).toLocaleString('es', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const labels = { datos: 'Copia diaria', 'antes-de-sincronizar': 'Antes de sincronizar', 'antes-de-adoptar': 'Antes de usar los datos sincronizados', 'antes-de-restaurar': 'Antes de restaurar' };
+      const nice = (label) => labels[label] || label;
+      return `${head('Restaurar una copia')}
+        <p class="small ink-2">Elige una copia para volver a ese momento. Antes se guarda una copia de tus datos actuales, y si usas sincronización, los otros dispositivos quedarán igual.</p>
+        ${d.list == null ? '<p class="muted">Cargando copias…</p>' : d.list.length ? `<div class="group-box">${d.list.map((c, i) => `<div class="mov"><div><strong>${esc(nice(c.label))}</strong><div class="meta">${when(c.at)}</div></div><div class="amt"><button class="btn sm" data-action="backup-pick" data-i="${i}">Restaurar…</button></div></div>`).join('')}</div>` : `<p class="muted">Todavía no hay copias${isNative ? '' : ' en este dispositivo. Puedes importar un respaldo exportado.'}</p>`}
+        <div class="sheet-foot"><button class="btn" data-action="close">Cerrar</button></div>`;
+    }
     case 'producto': {
       const env = orderEnvelope();
       return `${head('Agregar producto')}
@@ -1027,6 +1171,7 @@ function openModal(name, data = {}) {
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
+  if (name === 'copias') { base.list = null; setTimeout(loadBackupList, 0); } // después de abrir la hoja
   if (name === 'alimento') {
     const existing = data.index != null ? state.food.items[Number(data.index)] : null;
     Object.assign(base, existing
@@ -1289,9 +1434,10 @@ const ACTIONS = {
   },
   'del-order-item': (el) => {
     const env = orderEnvelope();
-    env.order.items.splice(Number(el.dataset.i), 1);
+    const index = Number(el.dataset.i);
+    const [item] = env.order.items.splice(index, 1);
     env.updatedAt = Date.now();
-    commit();
+    undoable(toTrash('producto', item.name, item, { envId: env.id, index }), `“${item.name}” quitado del pedido`);
   },
   'order-mark': (el) => {
     const env = orderEnvelope();
@@ -1337,25 +1483,42 @@ const ACTIONS = {
     for (const section of E.FIX_SECTIONS[id] || []) touch(section);
     commit('Recomendación resuelta ✓');
   },
-  'del-food': (el) => { state.food.items.splice(Number(el.dataset.i), 1); touch('food'); commit(); },
+  'del-food': (el) => {
+    const index = Number(el.dataset.i);
+    const [item] = state.food.items.splice(index, 1);
+    touch('food');
+    undoable(toTrash('alimento', item.name, item, { index }), `“${item.name}” quitado del menú`);
+  },
   'del-pay': (el) => {
     const pay = state.payments.find((p) => p.id === el.dataset.id);
-    if (!pay || !confirm('¿Borrar este movimiento y su reparto?')) return;
+    if (!pay) return;
     state.payments = state.payments.filter((p) => p.id !== pay.id);
     markDeleted(pay.id);
     // Un movimiento entre sobres tiene dos mitades: se borran juntas.
-    if (pay.pair) {
-      markDeleted(...state.expenses.filter((x) => x.pair === pay.pair).map((x) => x.id));
+    const pairs = pay.pair ? state.expenses.filter((x) => x.pair === pay.pair) : [];
+    if (pairs.length) {
+      markDeleted(...pairs.map((x) => x.id));
       state.expenses = state.expenses.filter((x) => x.pair !== pay.pair);
     }
-    commit('Movimiento borrado');
+    const label = pay.kind === 'pago' ? `${pay.client || 'Pago'} · ${fmt(pay.amount)}` : `${pay.note || 'Movimiento'} · ${fmt(pay.amount)}`;
+    undoable(toTrash('pago', label, pay, { expenses: pairs }), 'Movimiento borrado');
   },
-  'del-exp': (el) => { if (confirm('¿Borrar este gasto?')) { state.expenses = state.expenses.filter((x) => x.id !== el.dataset.id); markDeleted(el.dataset.id); commit('Gasto borrado'); } },
+  'del-exp': (el) => {
+    const exp = state.expenses.find((x) => x.id === el.dataset.id);
+    if (!exp) return;
+    state.expenses = state.expenses.filter((x) => x.id !== exp.id);
+    markDeleted(exp.id);
+    const env = envById(exp.envId);
+    undoable(toTrash('gasto', `${env ? env.name : 'Gasto'} · ${fmt(exp.amount)}${exp.note ? ` · ${exp.note}` : ''}`, exp), 'Gasto borrado');
+  },
   'del-env': (el) => {
     const e = envById(el.dataset.id);
     const bal = E.envelopeBalance(state, e.id);
     if (bal > 0) return toast(`Primero mueve los ${fmt(bal)} de este sobre a otro`);
-    if (confirm(`¿Eliminar “${e.name}”?`)) { state.envelopes = state.envelopes.filter((x) => x.id !== e.id); markDeleted(e.id); commit('Sobre eliminado'); }
+    const index = state.envelopes.findIndex((x) => x.id === e.id);
+    state.envelopes = state.envelopes.filter((x) => x.id !== e.id);
+    markDeleted(e.id);
+    undoable(toTrash('sobre', e.name, e, { index }), `Sobre “${e.name}” eliminado`);
   },
   'add-env': () => {
     state.envelopes.push({ id: E.uid(), name: 'Nuevo sobre', icon: '✨', group: 'gusto', monthly: 0, priority: 10, updatedAt: Date.now() });
@@ -1385,19 +1548,46 @@ const ACTIONS = {
     say('Conectando…', true);
     try {
       await Sync.checkRepo(config);
-      const adoptRemote = !Sync.hasMovements(state);
-      const result = await Sync.synchronize(state, config, { device: DEVICE, adoptRemote });
-      state = migrate(result.state);
-      save(state);
-      saveSyncConfig(config);
-      Object.assign(syncState, { config, last: result.waiting ? null : result.at, error: '', waiting: Boolean(result.waiting) });
-      closeModal();
-      render();
-      toast(result.waiting ? 'Conectado. Se sincronizará cuando haya datos en algún dispositivo.' : 'Sincronización activada ✓');
+      const remoteState = await Sync.fetchRemoteState(config);
+      const localHasData = Sync.hasMovements(state) || state.onboarded;
+      if (remoteState && localHasData) {
+        // Los dos lados tienen datos: nunca se reemplaza nada sin preguntar.
+        Object.assign(ui.draft, { step: 'elegir', config, local: Sync.summarize(state), remote: Sync.summarize(remoteState) });
+        renderModal();
+        return;
+      }
+      await connectSync(config, remoteState ? 'remote' : 'merge');
     } catch (err) {
       el.disabled = false;
       say(err?.message || String(err));
     }
+  },
+  'sync-choose': async (el) => {
+    const mode = el.dataset.mode;
+    if (mode !== 'merge' && !confirm(mode === 'remote'
+      ? '¿Reemplazar los datos de este dispositivo por los sincronizados? Se guardará una copia de los actuales.'
+      : '¿Reemplazar los datos sincronizados por los de este dispositivo? Los otros dispositivos recibirán esta versión.')) return;
+    for (const b of $modal.querySelectorAll('[data-action="sync-choose"]')) b.disabled = true;
+    try {
+      await connectSync(ui.draft.config, mode);
+    } catch (err) {
+      toast(err?.message || String(err));
+      for (const b of $modal.querySelectorAll('[data-action="sync-choose"]')) b.disabled = false;
+    }
+  },
+  'trash-restore': (el) => restoreTrash(el.dataset.id),
+  'backup-pick': async (el) => {
+    const entry = ui.draft.list[Number(el.dataset.i)];
+    let data;
+    try { data = JSON.parse(await readBackup(entry)); } catch { return toast('No se pudo leer esa copia.'); }
+    const r = Sync.summarize(data);
+    if (!confirm(`¿Restaurar la copia del ${new Date(entry.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}?\n\nTiene ${r.pagos} pagos, ${r.gastos} gastos, ${r.sobres} sobres y ${r.alimentos} alimentos. Tus datos actuales se guardarán en una copia antes.`)) return;
+    applyRestore(data);
+  },
+  'trash-empty': () => {
+    if (!confirm('¿Vaciar la papelera? Lo que contiene ya no se podrá restaurar.')) return;
+    state.trash = [];
+    commit('Papelera vaciada');
   },
   'sync-now': () => runSync(),
   'sync-off': () => {
@@ -1433,6 +1623,15 @@ document.addEventListener('keydown', (ev) => {
 
 // Órdenes desde la barra lateral, la barra de herramientas y los menús de la app de Mac.
 window.nativeAPI = {
+  // La Mac avisa que datos.json cambió fuera de la app: se recargan esos datos en vez de sobrescribirlos.
+  reloadData: (text) => {
+    try { state = migrate(JSON.parse(text)); } catch { return; }
+    ui.modal = null;
+    renderModal();
+    render();
+    toast('Datos actualizados desde el archivo');
+    scheduleSync(500);
+  },
   go: (view) => { if (!state.onboarded) return; ui.modal = null; renderModal(); ui.view = view; render(); window.scrollTo(0, 0); },
   open: (modal) => { if (state.onboarded) openModal(modal); },
   month: (delta) => { ui.month = E.addMonths(ui.month, delta); render(); if (ui.modal === 'sobre') renderModal(); },
@@ -1441,9 +1640,8 @@ window.nativeAPI = {
 async function importBackup(file) {
   try {
     const data = migrate(JSON.parse(await file.text()));
-    if (!confirm('Esto reemplaza los datos actuales con los del respaldo. ¿Continuar?')) return;
-    state = data;
-    commit('Respaldo importado ✓');
+    if (!confirm('Esto reemplaza los datos actuales con los del respaldo. Se guardará una copia de los actuales antes. ¿Continuar?')) return;
+    applyRestore(data, 'Respaldo importado ✓');
   } catch {
     toast('Ese archivo no es un respaldo válido');
   }

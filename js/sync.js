@@ -70,10 +70,13 @@ export async function decryptState(file, passphrase) {
 const ts = (x) => Number(x) || 0;
 
 // Une listas por id: gana la versión editada más recientemente y se descartan los borrados.
-function mergeById(local = [], remote = [], deleted = {}) {
+// Un registro está borrado si tiene marca de borrado y no se restauró después.
+const isGone = (id, deleted, restored) => ts(deleted[id]) > ts(restored[id]);
+
+function mergeById(local = [], remote = [], deleted = {}, restored = {}) {
   const out = new Map();
   for (const item of [...local, ...remote]) {
-    if (!item || item.id == null || deleted[item.id]) continue;
+    if (!item || item.id == null || isGone(item.id, deleted, restored)) continue;
     const prev = out.get(item.id);
     if (!prev || ts(item.updatedAt) > ts(prev.updatedAt)) out.set(item.id, item);
   }
@@ -85,8 +88,10 @@ export function mergeStates(local, remote) {
   const rm = remote.meta || {};
   const deleted = { ...(remote.deleted || {}) };
   for (const [id, t] of Object.entries(local.deleted || {})) deleted[id] = Math.max(ts(deleted[id]), ts(t));
+  const restored = { ...(remote.restored || {}) };
+  for (const [id, t] of Object.entries(local.restored || {})) restored[id] = Math.max(ts(restored[id]), ts(t));
 
-  const merged = { ...local, meta: {}, deleted };
+  const merged = { ...local, meta: {}, deleted, restored };
   // Un estado remoto recién instalado nunca reemplaza los ajustes de un dispositivo en uso.
   const remoteFresh = isFresh(remote) && !isFresh(local);
   // Ajustes, pareja, alimentación y bienvenida: gana la sección modificada más recientemente.
@@ -99,9 +104,9 @@ export function mergeStates(local, remote) {
     if (useRemote && remote[section] !== undefined) merged[section] = remote[section];
     merged.meta[section] = Math.max(l, r);
   }
-  merged.envelopes = mergeById(local.envelopes, remote.envelopes, deleted);
-  merged.payments = mergeById(local.payments, remote.payments, deleted);
-  merged.expenses = mergeById(local.expenses, remote.expenses, deleted);
+  merged.envelopes = mergeById(local.envelopes, remote.envelopes, deleted, restored);
+  merged.payments = mergeById(local.payments, remote.payments, deleted, restored);
+  merged.expenses = mergeById(local.expenses, remote.expenses, deleted, restored);
   merged.updatedAt = Math.max(ts(local.updatedAt), ts(remote.updatedAt));
   return merged;
 }
@@ -156,16 +161,40 @@ async function putRemote({ repo, token }, file, sha, device, fetchFn) {
   return true;
 }
 
+// Datos sincronizados (descifrados), o null si todavía no hay. Sirve para preguntar antes de conectar.
+export async function fetchRemoteState(config, fetchFn = fetch) {
+  const remote = await getRemote(config, fetchFn);
+  return remote ? decryptState(remote.file, config.passphrase) : null;
+}
+
+// Resumen para comparar dos copias de los datos antes de elegir cuál usar.
+export function summarize(state) {
+  const order = (state.envelopes || []).find((e) => e.order);
+  return {
+    pagos: (state.payments || []).filter((p) => !p.kind || p.kind === 'pago').length,
+    gastos: (state.expenses || []).length,
+    sobres: (state.envelopes || []).length,
+    alimentos: ((state.food || {}).items || []).length,
+    productos: order ? order.order.items.length : 0,
+    modificado: Number(state.updatedAt) || 0,
+  };
+}
+
 // Descarga, fusiona y sube. Devuelve el estado fusionado y si cambió respecto al local.
-// `adoptRemote`: al conectar un dispositivo sin movimientos, toma los datos sincronizados en lugar de fusionar.
-export async function synchronize(local, config, { device = 'un dispositivo', fetchFn = fetch, attempts = 3, adoptRemote = false } = {}) {
+// `prefer`: 'merge' combina (lo normal); 'remote' usa los datos sincronizados; 'local' sube los de este
+// dispositivo tal cual. Un dispositivo recién instalado adopta lo sincronizado (`adopted: true`).
+export async function synchronize(local, config, { device = 'un dispositivo', fetchFn = fetch, attempts = 3, prefer = 'merge', adoptRemote = false } = {}) {
+  if (adoptRemote) prefer = 'remote';
   for (let i = 0; i < attempts; i++) {
     const remote = await getRemote(config, fetchFn);
     let merged = mergeStates(local, local); // normalizado: con meta y borrados, igual que tras una fusión
     let remoteState = null;
+    let adopted = false;
     if (remote) {
       remoteState = await decryptState(remote.file, config.passphrase);
-      merged = adoptRemote || isFresh(local) ? remoteState : mergeStates(local, remoteState);
+      adopted = prefer === 'remote' || (prefer === 'merge' && isFresh(local));
+      if (adopted) merged = remoteState;
+      else if (prefer === 'merge') merged = mergeStates(local, remoteState);
     } else if (isFresh(local)) {
       // Todavía no hay nada que compartir: no se sube un estado vacío.
       return { state: local, changed: false, at: Date.now(), waiting: true };
@@ -175,7 +204,7 @@ export async function synchronize(local, config, { device = 'un dispositivo', fe
       const file = await encryptState(merged, config.passphrase, remote?.file?.kdf?.salt);
       if (!(await putRemote(config, file, remote?.sha, device, fetchFn))) continue;
     }
-    return { state: merged, changed: canonical(local) !== mergedKey, at: Date.now() };
+    return { state: merged, changed: canonical(local) !== mergedKey, at: Date.now(), adopted };
   }
   throw new Error('Otro dispositivo está sincronizando al mismo tiempo. Inténtalo de nuevo.');
 }

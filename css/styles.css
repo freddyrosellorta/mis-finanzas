@@ -378,6 +378,11 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .tipcard.good .ic { color: var(--green); }
 .tipcard.info .ic { color: var(--accent); }
 .tipcard .fix { margin-top: 8px; }
+.sync-option { display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%; padding: 10px 12px; border-radius: 8px; border: 0.5px solid var(--group-border); background: var(--content-bg); }
+.sync-option span { color: var(--label-2); font-size: 12px; line-height: 15px; }
+.sync-option.primary { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.sync-option:hover { background: var(--fill); }
+.sync-option:disabled { opacity: 0.5; }
 
 /* ---------- Macros ---------- */
 .macro { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
@@ -404,6 +409,7 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .mov { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 12px; }
 .mov + .mov { border-top: 0.5px solid var(--separator); }
 .card .mov { padding: 8px 0; }
+.card .group-box .mov { padding: 8px 12px; }
 .mov .amt { font-weight: 600; text-align: right; display: inline-flex; align-items: center; gap: 4px; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .mov .amt.in { color: var(--text-green); }
 .mov .meta { font-size: 11px; color: var(--label-2); }
@@ -438,6 +444,8 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   opacity: 0; pointer-events: none; transition: all 0.2s ease; z-index: 70; max-width: calc(100vw - 32px);
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.actionable { pointer-events: auto; display: flex; align-items: center; gap: 12px; }
+.toast-btn { border: 0; background: none; color: #64b5ff; font: inherit; font-weight: 600; padding: 2px 4px; cursor: default; }
 @media (min-width: 960px) { #toast { bottom: 24px; } }
 .native #toast { bottom: 24px; }
 

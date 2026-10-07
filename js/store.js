@@ -60,6 +60,8 @@ export function defaultState() {
     updatedAt: 0,
     meta: {},
     deleted: {},
+    restored: {},
+    trash: [],        // papelera de este dispositivo (30 días)
     settings: {
       name: '',
       currency: 'USD',
@@ -162,6 +164,8 @@ export function migrate(data) {
     payments: data.payments || [],
     expenses: data.expenses || [],
     meta: data.meta || {},
+    restored: data.restored || {},
+    trash: (data.trash || []).filter((t) => Date.now() - (Number(t.at) || 0) < 30 * 86400000),
     deleted: data.deleted || {},
     updatedAt: Number(data.updatedAt) || 0,
   };
