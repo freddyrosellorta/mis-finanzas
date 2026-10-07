@@ -133,7 +133,7 @@ export function save(state) {
 }
 
 // Completa campos que falten si el respaldo viene de una versión anterior.
-export const PRICE_UNITS = ['kg', 'litro', 'pieza', 'paquete'];
+export const PRICE_UNITS = ['kg', 'litro', 'pieza', 'paquete', 'monto'];
 
 // Completa la unidad de venta de alimentos guardados con la versión anterior (priceLabel).
 export function normalizeFoodItem(item) {

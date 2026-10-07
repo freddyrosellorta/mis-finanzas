@@ -94,7 +94,21 @@ export function referenceIncome(state, month) {
 
 // Compra semanal de un alimento para todas las personas, redondeada hacia arriba en la unidad en que se vende:
 // piezas y paquetes enteros; kg y litros en medios. Si dura más de una semana, se indica cada cuántas semanas.
+// Costo semanal de un alimento para todas las personas, en la moneda de gastos.
+// "Por monto" (p. ej. "deme $200 de pechuga") no necesita peso: monto × veces por semana.
+export function weeklyCost(item, people = 1) {
+  if (item.priceUnit === 'monto') return (Number(item.price) || 0) * (Number(item.perWeek) || 0);
+  const size = Number(item.priceGrams) || 0;
+  if (!size) return 0;
+  return ((Number(item.grams) || 0) * Math.max(1, people) * 7 / size) * (Number(item.price) || 0);
+}
+
 export function weeklyPurchase(item, people = 1) {
+  if (item.priceUnit === 'monto') {
+    const per = Number(item.perWeek) || 0;
+    if (!per) return null; // falta cuántas veces por semana
+    return per >= 1 ? { amount: per, everyWeeks: 1, exact: per } : { amount: 1, everyWeeks: Math.round(1 / per), exact: per };
+  }
   const need = (Number(item.grams) || 0) * Math.max(1, people) * 7; // g o ml por semana
   const size = Number(item.priceGrams) || 0;
   if (!need) return { amount: 0, everyWeeks: 1, exact: 0 };
@@ -115,15 +129,17 @@ export function foodTotals(food) {
     t.fat += it.fat * f;
     t.carbs += it.carbs * f;
     t.fiber += it.fiber * f;
-    t.dailyCost += (g / (Number(it.priceGrams) || 1000)) * (Number(it.price) || 0);
   }
   // Los gramos son por persona (para comparar con las metas); la compra y el costo son para todos.
   t.people = Math.max(1, Math.round(Number(food.people) || 1));
-  t.dailyCost *= t.people;
+  // Lo que se compra por peso o pieza lleva margen de merma; lo comprado por monto ya es lo que se paga.
+  const byWeight = food.items.filter((it) => it.priceUnit !== 'monto').reduce((s, it) => s + weeklyCost(it, t.people), 0) / 7;
+  const byMoney = food.items.filter((it) => it.priceUnit === 'monto').reduce((s, it) => s + weeklyCost(it, t.people), 0) / 7;
+  t.dailyCost = byWeight + byMoney;
   // Carbohidratos netos = totales menos fibra (como los cuentan muchas apps de nutrición).
   t.netCarbs = Math.max(0, t.carbs - t.fiber);
   const waste = 1 + (Number(food.wastePct) || 0) / 100;
-  t.monthlyCost = t.dailyCost * 30.4 * waste + (Number(food.extraMonthly) || 0);
+  t.monthlyCost = byWeight * 30.4 * waste + byMoney * 30.4 + (Number(food.extraMonthly) || 0);
   return t;
 }
 

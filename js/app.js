@@ -632,7 +632,7 @@ function viewComida() {
           <td class="r num">${purchase(it, t.people, i)}</td>
           <td><span class="popup" style="min-width:126px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
           <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
-          <td class="r num">${num(it.price) && num(it.priceGrams) ? fmtCost((num(it.grams) * t.people * 7 / num(it.priceGrams)) * num(it.price)) : '<span class="muted">—</span>'}</td>
+          <td class="r num">${E.weeklyCost(it, t.people) ? fmtCost(E.weeklyCost(it, t.people)) : '<span class="muted">—</span>'}</td>
           <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -646,14 +646,19 @@ const UNIT_NAMES = {
   litro: { por: 'por litro', one: 'L', many: 'L' },
   pieza: { por: 'por pieza', one: 'pieza', many: 'piezas' },
   paquete: { por: 'por paquete', one: 'paquete', many: 'paquetes' },
+  monto: { por: 'por monto ($)', one: 'vez', many: 'veces' },
 };
 const isWeighed = (it) => it.priceUnit === 'kg' || it.priceUnit === 'litro';
 
 // Compra de la semana en unidades redondeadas (½ kg, 3 paquetes, 42 piezas, 1 L cada 7 semanas).
 function purchase(it, people, index) {
   const p = E.weeklyPurchase(it, people);
-  if (!p) return `<button class="btn link" data-action="open" data-modal="alimento" data-index="${index}">Falta cuánto trae…</button>`;
+  if (!p) return `<button class="btn link" data-action="open" data-modal="alimento" data-index="${index}">${it.priceUnit === 'monto' ? 'Falta cuántas veces…' : 'Falta cuánto trae…'}</button>`;
   if (!p.amount) return '<span class="muted">—</span>';
+  if (it.priceUnit === 'monto') {
+    const each = num(it.price) ? ` de ${fmtCost(it.price)}` : '';
+    return p.everyWeeks > 1 ? `1${each} <span class="muted">cada ${p.everyWeeks} semanas</span>` : `${p.amount} ${p.amount === 1 ? 'vez' : 'veces'}${each}`;
+  }
   const names = UNIT_NAMES[it.priceUnit];
   const amount = p.amount === 0.5 ? '½' : String(p.amount).replace(/\.5$/, '½').replace(/^0½$/, '½');
   const text = `${amount} ${p.amount <= 1 ? names.one : names.many}`;
@@ -740,6 +745,21 @@ function viewPedido() {
         <div class="row between" style="flex-wrap:wrap"><span class="small ink-2">${lastThree.length === 1 ? 'Último pedido' : `Promedio de los últimos ${lastThree.length} pedidos`}: <strong>${fmtIn(avg, cur)}</strong></span>${Math.abs(avg - num(env.monthly)) > 1 ? `<button class="btn sm" data-action="order-use-avg">Usar ${lastThree.length === 1 ? 'ese monto' : 'el promedio'} como presupuesto</button>` : ''}</div>`
       : '<p class="muted">Cuando registres tu primer pedido aparecerá aquí.</p>'}
     </section>`;
+}
+
+// Campos de precio de la hoja de alimento: solo los que aplican a la forma de compra elegida.
+function foodPriceFields(d) {
+  const price = (label, help = 'Puedes dejarlo vacío y ponerlo después.') =>
+    `<div class="field"><label for="a-price">${label}</label>${money('id="a-price" data-draft="price"', d.price, '', 'cost')}<span class="help">${help}</span></div>`;
+  const number = (key, label, help, attrs = 'min="1" step="any"') =>
+    `<div class="field"><label for="a-${key}">${label}</label><input id="a-${key}" class="input" type="number" inputmode="decimal" ${attrs} data-draft="${key}" value="${esc(d[key])}"><span class="help">${help}</span></div>`;
+  switch (d.priceUnit) {
+    case 'pieza': return price('Precio de una pieza') + number('priceGrams', 'Peso aproximado de una pieza (g)', 'No tiene que ser exacto: un huevo ≈ 50 g, un plátano ≈ 120 g. Sirve para saber cuántas comprar.');
+    case 'paquete': return price('Precio del paquete') + number('priceGrams', 'Contenido del paquete (g o ml)', 'Viene en la etiqueta: bolsa de pan 680 g, cartón de leche 1000 ml.');
+    case 'monto': return price('¿Cuánto pides cada vez?', 'Lo que pagas, p. ej. “deme $200 de pechuga”.') + number('perWeek', '¿Cuántas veces por semana?', 'Si es cada 2 semanas, escribe 0.5.', 'min="0.1" step="0.5"');
+    case 'litro': return price('Precio por litro');
+    default: return price('Precio por kg');
+  }
 }
 
 function viewMas() {
@@ -1148,8 +1168,7 @@ function modalHTML() {
         </div>
         <div class="form-grid">
           <div class="field"><label for="a-unit">Se vende por</label><span class="popup"><select id="a-unit" class="input" data-draft="priceUnit">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === d.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></div>
-          <div class="field"><label for="a-price">Precio</label>${money('id="a-price" data-draft="price"', d.price, '', 'cost')}<span class="help">Puedes dejarlo vacío y ponerlo después.</span></div>
-          <div class="field"><label for="a-pg">¿Cuánto trae? (g o ml)</label><input id="a-pg" class="input" type="number" inputmode="decimal" min="1" step="any" data-draft="priceGrams" value="${esc(d.priceGrams)}" placeholder="Solo por pieza o paquete"><span class="help">Peso de una pieza (huevo ≈ 50 g) o contenido del paquete (bolsa de pan 680 g). Se ignora en kg y litro.</span></div>
+          ${foodPriceFields(d)}
         </div>
         ${foot(d.index != null ? 'Guardar' : 'Agregar', 'save-alimento')}`;
     default:
@@ -1294,7 +1313,7 @@ document.addEventListener('change', (ev) => {
       if (isWeighed(item)) {
         item.priceGrams = 1000;
       } else {
-        // Al pasar a pieza o paquete hace falta saber cuánto trae: se abre la hoja de edición.
+        // Pieza, paquete o monto necesitan un dato más (peso, contenido o veces por semana): se abre la hoja.
         item.priceGrams = 0;
         touch('food');
         persist();
@@ -1340,6 +1359,9 @@ document.addEventListener('change', (ev) => {
   } else if (el.id === 'import-file' && el.files[0]) {
     importBackup(el.files[0]);
     el.value = '';
+  } else if (el.dataset.draft === 'priceUnit' && ui.modal === 'alimento') {
+    ui.draft.priceUnit = el.value;
+    renderModal();
   } else if (el.dataset.draft === 'currency') {
     ui.draft.currency = el.value;
     renderModal();
@@ -1413,8 +1435,10 @@ const ACTIONS = {
     if (!d.name.trim()) return toast('Escribe el nombre del alimento');
     const priceUnit = PRICE_UNITS.includes(d.priceUnit) ? d.priceUnit : 'kg';
     const weighed = priceUnit === 'kg' || priceUnit === 'litro';
-    if (!weighed && !num(d.priceGrams)) return toast('Escribe el peso de la pieza o el contenido del paquete');
-    const item = { name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : num(d.priceGrams) };
+    if ((priceUnit === 'pieza' || priceUnit === 'paquete') && !num(d.priceGrams)) return toast(priceUnit === 'pieza' ? 'Escribe el peso aproximado de una pieza' : 'Escribe el contenido del paquete');
+    if (priceUnit === 'monto' && !(num(d.perWeek) > 0)) return toast('Escribe cuántas veces por semana lo compras');
+    const item = { name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : priceUnit === 'monto' ? 0 : num(d.priceGrams) };
+    if (priceUnit === 'monto') item.perWeek = num(d.perWeek);
     if (d.index != null) Object.assign(state.food.items[d.index], item);
     else state.food.items.push({ id: E.uid(), ...item });
     touch('food');
