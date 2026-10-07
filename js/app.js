@@ -36,7 +36,7 @@ const SYMBOL_FALLBACK = {
   trash: '🗑', xmark: '✕', 'square.and.arrow.up': '↑', 'square.and.arrow.down': '↓', lightbulb: '💡',
   'checkmark.circle.fill': '✓', 'exclamationmark.triangle.fill': '⚠', 'xmark.octagon.fill': '⛔', 'info.circle.fill': 'ℹ',
   'building.columns': '🏦', 'arrow.counterclockwise': '↺', house: '🏠', target: '🎯', 'chart.pie': '🧮',
-  'fork.knife': '🥗', 'person.2': '🏡', shippingbox: '📦', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
+  'fork.knife': '🥗', 'person.2': '🏡', shippingbox: '📦', cart: '🛒', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
 };
 function sym(name, cls = '') {
   const url = SYMBOLS[name];
@@ -101,7 +101,7 @@ function toast(msg, action = null) {
 
 // ---------- Papelera ----------
 // Lo borrado se guarda 30 días en `state.trash` para deshacer o restaurar.
-const TRASH_KINDS = { pago: 'Pago', gasto: 'Gasto', sobre: 'Sobre', alimento: 'Alimento', producto: 'Producto del pedido' };
+const TRASH_KINDS = { pago: 'Pago', gasto: 'Gasto', sobre: 'Sobre', alimento: 'Alimento', producto: 'Producto de una lista', productos: 'Productos de una lista' };
 function toTrash(kind, label, item, extra = {}) {
   const entry = { id: E.uid(), kind, label, at: Date.now(), item: structuredClone(item), extra };
   (state.trash ||= []).unshift(entry);
@@ -128,9 +128,14 @@ function restoreTrash(entryId) {
     insertAt(state.food.items, item, extra.index);
     touch('food');
   } else if (entry.kind === 'producto') {
-    const env = envById(extra.envId) || orderEnvelope();
-    if (!env) return toast('El pedido familiar ya no existe; restaura primero su sobre.');
+    const env = envById(extra.envId) || currentOrder();
+    if (!env) return toast('Esa lista ya no existe; restaura primero su sobre.');
     insertAt(env.order.items, item, extra.index);
+    env.updatedAt = now;
+  } else if (entry.kind === 'productos') {
+    const env = envById(extra.envId);
+    if (!env) return toast('Esa lista ya no existe; restaura primero su sobre.');
+    for (const { index, item: it } of [...item].sort((a, b) => a.index - b.index)) insertAt(env.order.items, it, index);
     env.updatedAt = now;
   }
   state.trash = state.trash.filter((t) => t.id !== entryId);
@@ -665,22 +670,29 @@ function purchase(it, people, index) {
   return p.everyWeeks > 1 ? `${text} <span class="muted">cada ${p.everyWeeks} semanas</span>` : text;
 }
 
-// ---------- Pedido familiar ----------
-// Un sobre con lista de productos habituales: cada mes se marcan los que se llevan, se suma el envío
-// y se registra el pedido como gasto (solo tu parte; el aporte fijo de tu pareja se descuenta).
+// ---------- Listas de compra ----------
+// Cada lista vive en un sobre (`env.order`): productos habituales con precio y veces comprado. En cada compra
+// se marcan los que se llevan, se suma el envío (si hay) y se registra como gasto (tu parte, si tu pareja aporta).
 
-const orderEnvelope = () => state.envelopes.find((e) => e.order);
+const orderLists = () => state.envelopes.filter((e) => e.order);
+const currentOrder = () => orderLists().find((e) => e.id === ui.orderId) || orderLists()[0];
 
 function viewPedido() {
-  const env = orderEnvelope();
+  const env = currentOrder();
+  const lists = orderLists();
+  const switcher = `<div class="row" style="flex-wrap:wrap">
+      ${lists.length > 1 ? `<div class="segmented" role="radiogroup" aria-label="Lista">${lists.map((l) => `<label><input type="radio" name="olist" value="${l.id}" ${l.id === env?.id ? 'checked' : ''} data-order-list><span>${esc(l.icon)} ${esc(l.name)}</span></label>`).join('')}</div>` : ''}
+      <button class="btn sm" data-action="open" data-modal="nueva-lista">${sym('plus')} Nueva lista…</button>
+    </div>`;
   if (!env) {
-    return `<div class="page-head"><div><h1>Pedido familiar</h1><p>La compra mensual que envías a tu familia.</p></div></div>
+    return `<div class="page-head"><div><h1>Listas de compra</h1><p>Tus compras habituales: súper, pedidos a tu familia…</p></div></div>
       <section class="card stack">
-        <h2>Crea tu pedido familiar</h2>
-        <p class="sub">Guarda los productos que más suele necesitar tu familia con su precio. Cada mes marcas qué llevar, la app suma el envío, te dice si cabe en el presupuesto y lo registra como gasto.</p>
-        <div><button class="btn primary" data-action="create-order">${sym('plus')} Crear pedido familiar</button></div>
+        <h2>Crea tu primera lista</h2>
+        <p class="sub">Guarda los productos que compras seguido con su precio. En cada compra marcas qué llevar, la app suma el total, te dice si cabe en el presupuesto y lo registra como gasto.</p>
+        <div><button class="btn primary" data-action="open" data-modal="nueva-lista">${sym('plus')} Nueva lista…</button></div>
       </section>`;
   }
+  const hasTimes = env.order.items.some((it) => num(it.times) > 0);
   const o = env.order;
   const cur = E.envCurrency(state, env);
   const r = E.orderSummary(env);
@@ -692,14 +704,15 @@ function viewPedido() {
     : r.diff >= 0 ? { level: 'good', icon: 'checkmark.circle.fill', title: `Cabe en el presupuesto: sobran ${fmtIn(r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}.` }
     : { level: 'warning', icon: 'exclamationmark.triangle.fill', title: `Te pasas por ${fmtIn(-r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}. Quita algún producto o mueve dinero de otro sobre.` };
 
-  return `<div class="page-head"><div><h1>Pedido familiar</h1><p>${esc(env.icon)} ${esc(env.name)}${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
+  return `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
+    ${switcher}
 
     <section class="card stack">
       <h2>Presupuesto</h2>
       <div class="form-grid">
-        <div class="field"><label for="o-budget">Presupuesto mensual del pedido</label>${money(`id="o-budget" ${envBind(env.id, 'monthly')}`, env.monthly || '', '', cur)}<span class="help">Lo que suelen gastar entre los dos, con envío.</span></div>
-        <div class="field"><label for="o-partner">Aporte fijo de tu pareja</label>${money(`id="o-partner" ${envBind(env.id, 'partnerAmount')}`, env.partnerAmount || '', '', cur)}<span class="help">Tu sobre solo aparta el resto.</span></div>
-        <div class="field"><label for="o-store">Página donde compran</label><input id="o-store" class="input" value="${esc(o.store || '')}" placeholder="Nombre de la tienda" data-order="store" data-k="o:store"></div>
+        <div class="field"><label for="o-budget">Presupuesto mensual</label>${money(`id="o-budget" ${envBind(env.id, 'monthly')}`, env.monthly || '', '', cur)}<span class="help">Lo que suelen gastar al mes en esta lista${o.shipping ? ', con envío' : ''}.</span></div>
+        <div class="field"><label for="o-partner">Aporte fijo de tu pareja (opcional)</label>${money(`id="o-partner" ${envBind(env.id, 'partnerAmount')}`, env.partnerAmount || '', '', cur)}<span class="help">Tu sobre solo aparta el resto.</span></div>
+        <div class="field"><label for="o-store">Tienda</label><input id="o-store" class="input" value="${esc(o.store || '')}" placeholder="Nombre de la tienda" data-order="store" data-k="o:store"></div>
       </div>
       <div class="stats">
         <div class="stat"><div class="k">Tu parte al mes</div><div class="v">${fmt(E.monthlyTarget(state, env, m))}</div></div>
@@ -709,12 +722,14 @@ function viewPedido() {
 
     <section class="card stack">
       <div class="row between"><h2>Productos habituales</h2><button class="btn sm" data-action="open" data-modal="producto">${sym('plus')} Agregar producto…</button></div>
-      <p class="sub">Marca lo que llevan este mes y ajusta las cantidades. Los precios se guardan para el siguiente pedido.</p>
+      <p class="sub">Marca lo que llevan en esta compra y ajusta las cantidades. Los precios se guardan para la siguiente.</p>
+      ${hasTimes ? `<div class="row" style="flex-wrap:wrap"><span class="small">Quitar los comprados menos de</span><span class="popup" style="min-width:72px"><select class="input" aria-label="Veces" id="o-min">${[2, 3, 4, 5].map((n) => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></span><span class="small">veces</span><button class="btn sm" data-action="order-prune">Quitar…</button></div>` : ''}
       ${o.items.length ? `<div class="table-wrap"><table class="table">
-        <thead><tr><th></th><th>Producto</th><th class="r">Precio (${cur})</th><th class="r">Cantidad</th><th class="r">Subtotal</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Producto</th>${hasTimes ? '<th class="r">Veces</th>' : ''}<th class="r">Precio (${cur})</th><th class="r">Cantidad</th><th class="r">Subtotal</th><th></th></tr></thead>
         <tbody>${o.items.map((it, i) => `<tr>
           <td class="check-cell"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="Llevar ${esc(it.name)}" data-order-item="${i}" data-field="selected" data-k="oi:${i}:s"></td>
           <td><input class="input" value="${esc(it.name)}" aria-label="Nombre del producto" data-order-item="${i}" data-field="name" data-k="oi:${i}:n"></td>
+          ${hasTimes ? `<td class="r num muted">${num(it.times) ? `${it.times}${it.timesPlus ? '+' : ''}` : '—'}</td>` : ''}
           <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
           <td class="r"><input class="input num" style="width:64px" type="number" inputmode="numeric" min="0" step="1" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q"></td>
           <td class="r num ${it.selected ? '' : 'muted'}">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
@@ -725,8 +740,8 @@ function viewPedido() {
     </section>
 
     <section class="card stack">
-      <h2>Este pedido</h2>
-      <div class="field" style="max-width:240px"><label for="o-ship">Envío</label>${money(`id="o-ship" data-order="shipping" data-k="o:ship"`, o.shipping || '', '', cur)}</div>
+      <h2>Esta compra</h2>
+      <div class="field" style="max-width:240px"><label for="o-ship">Envío (si aplica)</label>${money(`id="o-ship" data-order="shipping" data-k="o:ship"`, o.shipping || '', '', cur)}</div>
       <div>
         <div class="step-line"><span>Productos (${r.units} en ${r.items} ${r.items === 1 ? 'renglón' : 'renglones'})</span><span class="num">${fmtIn(r.products, cur)}</span></div>
         <div class="step-line"><span>Envío</span><span class="num">${fmtIn(r.shipping, cur)}</span></div>
@@ -736,14 +751,14 @@ function viewPedido() {
       </div>
       ${status ? `<div class="tipcard ${status.level}"><span class="ic">${sym(status.icon)}</span><div><strong>${status.title}</strong><p>${status.text}</p></div></div>` : ''}
       ${r.missingPrices ? `<div class="tipcard info"><span class="ic">${sym('info.circle.fill')}</span><div><strong>${r.missingPrices} ${r.missingPrices === 1 ? 'producto marcado sin precio' : 'productos marcados sin precio'}</strong><p>No se suman al total hasta que les pongas precio.</p></div></div>` : ''}
-      <div><button class="btn primary" data-action="save-order" ${r.total > 0 ? '' : 'disabled'}>Registrar pedido…</button></div>
+      <div><button class="btn primary" data-action="save-order" ${r.total > 0 ? '' : 'disabled'}>Registrar compra…</button></div>
     </section>
 
     <section class="card stack">
-      <h2>Pedidos anteriores</h2>
+      <h2>Compras anteriores</h2>
       ${history.length ? `<div>${history.slice(0, 12).map((x) => `<div class="mov"><div><strong>${dateLabel(x.date)}</strong><div class="meta">${x.order.units} productos · total ${fmtIn(x.order.total, x.order.currency || cur)}${x.order.partner ? ` · tu pareja ${fmtIn(x.order.partner, x.order.currency || cur)}` : ''}</div></div><div class="amt num">−${fmt(x.amount)}</div></div>`).join('')}</div>
-        <div class="row between" style="flex-wrap:wrap"><span class="small ink-2">${lastThree.length === 1 ? 'Último pedido' : `Promedio de los últimos ${lastThree.length} pedidos`}: <strong>${fmtIn(avg, cur)}</strong></span>${Math.abs(avg - num(env.monthly)) > 1 ? `<button class="btn sm" data-action="order-use-avg">Usar ${lastThree.length === 1 ? 'ese monto' : 'el promedio'} como presupuesto</button>` : ''}</div>`
-      : '<p class="muted">Cuando registres tu primer pedido aparecerá aquí.</p>'}
+        <div class="row between" style="flex-wrap:wrap"><span class="small ink-2">${lastThree.length === 1 ? 'Última compra' : `Promedio de las últimas ${lastThree.length} compras`}: <strong>${fmtIn(avg, cur)}</strong></span>${Math.abs(avg - num(env.monthly)) > 1 ? `<button class="btn sm" data-action="order-use-avg">Usar ${lastThree.length === 1 ? 'ese monto' : 'el promedio'} como presupuesto</button>` : ''}</div>`
+      : '<p class="muted">Cuando registres tu primera compra aparecerá aquí.</p>'}
     </section>`;
 }
 
@@ -767,7 +782,7 @@ function viewMas() {
   return `<div class="page-head"><div><h1>Más</h1></div></div>
     <section class="card menu">
       ${item('hogar', 'person.2', 'Hogar en pareja', 'Reparto justo de los gastos de la casa')}
-      ${item('pedido', 'shippingbox', 'Pedido familiar', 'Arma la compra del mes para tu familia')}
+      ${item('pedido', 'cart', 'Listas de compra', 'Súper, pedido familiar y compras habituales')}
       ${item('consejos', 'lightbulb', 'Recomendaciones', 'Todo lo que la app detecta en tu plan')}
       ${item('historial', 'clock.arrow.circlepath', 'Historial', 'Pagos recibidos y gastos')}
       ${item('ajustes', 'gearshape', 'Ajustes y respaldo', 'Impuestos, moneda, exportar datos')}
@@ -1148,8 +1163,16 @@ function modalHTML() {
         ${d.list == null ? '<p class="muted">Cargando copias…</p>' : d.list.length ? `<div class="group-box">${d.list.map((c, i) => `<div class="mov"><div><strong>${esc(nice(c.label))}</strong><div class="meta">${when(c.at)}</div></div><div class="amt"><button class="btn sm" data-action="backup-pick" data-i="${i}">Restaurar…</button></div></div>`).join('')}</div>` : `<p class="muted">Todavía no hay copias${isNative ? '' : ' en este dispositivo. Puedes importar un respaldo exportado.'}</p>`}
         <div class="sheet-foot"><button class="btn" data-action="close">Cerrar</button></div>`;
     }
+    case 'nueva-lista': {
+      const candidates = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
+      return `${head('Nueva lista de compra')}
+        <p class="small ink-2">Cada lista se paga desde un sobre. Puedes usar uno que ya tienes (p. ej. “Súper y gastos del hogar”) o crear uno nuevo.</p>
+        <div class="field"><label for="l-env">Sobre</label><span class="popup"><select id="l-env" class="input" data-draft="envId">${candidates.map((e) => `<option value="${e.id}" ${e.id === d.envId ? 'selected' : ''}>${esc(e.icon)} ${esc(e.name)}</option>`).join('')}<option value="nuevo" ${d.envId === 'nuevo' ? 'selected' : ''}>＋ Crear un sobre nuevo</option></select></span></div>
+        ${d.envId === 'nuevo' ? `<div class="field"><label for="l-name">Nombre</label><input id="l-name" class="input" data-draft="name" value="${esc(d.name)}" placeholder="Ej. Súper Walmart"></div>` : ''}
+        ${foot('Crear lista', 'save-lista')}`;
+    }
     case 'producto': {
-      const env = orderEnvelope();
+      const env = currentOrder();
       return `${head('Agregar producto')}
         <div class="field"><label for="p-name">Producto</label><input id="p-name" class="input" data-draft="name" value="${esc(d.name)}" placeholder="Ej. Leche en polvo 1 kg"></div>
         <div class="form-grid">
@@ -1190,6 +1213,11 @@ function openModal(name, data = {}) {
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
+  if (name === 'nueva-lista') {
+    const free = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
+    const pick = free.find((e) => e.id === 'hogar' || /súper|super/i.test(e.name)) || free.find((e) => e.role !== 'renta') || free[0];
+    Object.assign(base, { name: '', envId: pick?.id || 'nuevo' });
+  }
   if (name === 'copias') { base.list = null; setTimeout(loadBackupList, 0); } // después de abrir la hoja
   if (name === 'alimento') {
     const existing = data.index != null ? state.food.items[Number(data.index)] : null;
@@ -1215,7 +1243,7 @@ function renderModal() {
 
 const NAV = [['inicio', 'house', 'Inicio'], ['metas', 'target', 'Metas'], ['plan', 'chart.pie', 'Plan'], ['comida', 'fork.knife', 'Comida'], ['mas', 'ellipsis.circle', 'Más']];
 // Títulos cortos para la barra de herramientas de macOS (HIG: menos de 15 caracteres).
-const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', pedido: 'Pedido familiar', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
+const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', pedido: 'Listas de compra', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
 const MONTH_VIEWS = ['inicio', 'plan', 'historial', 'consejos'];
 const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, comida: viewComida, mas: viewMas, hogar: viewHogar, pedido: viewPedido, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
 
@@ -1328,7 +1356,7 @@ document.addEventListener('change', (ev) => {
     persist();
     scheduleRender();
   } else if (el.dataset.orderItem != null || el.dataset.order) {
-    const env = orderEnvelope();
+    const env = currentOrder();
     if (!env) return;
     if (el.dataset.order) {
       env.order[el.dataset.order] = el.dataset.order === 'store' ? el.value : num(el.value);
@@ -1359,6 +1387,12 @@ document.addEventListener('change', (ev) => {
   } else if (el.id === 'import-file' && el.files[0]) {
     importBackup(el.files[0]);
     el.value = '';
+  } else if (el.matches('[data-order-list]')) {
+    ui.orderId = el.value;
+    render();
+  } else if (el.dataset.draft === 'envId' && ui.modal === 'nueva-lista') {
+    ui.draft.envId = el.value;
+    renderModal();
   } else if (el.dataset.draft === 'priceUnit' && ui.modal === 'alimento') {
     ui.draft.priceUnit = el.value;
     renderModal();
@@ -1444,33 +1478,56 @@ const ACTIONS = {
     touch('food');
     closeModal(); commit(d.index != null ? 'Alimento actualizado ✓' : 'Alimento agregado ✓');
   },
-  'create-order': () => {
-    state.envelopes.push({ id: E.uid(), name: 'Pedido familiar', icon: '📦', group: 'necesidad', monthly: 0, priority: 9, currency: baseCode(), partnerAmount: 0, order: { store: '', shipping: 0, items: [] }, updatedAt: Date.now() });
-    commit('Pedido familiar creado ✓');
+  'save-lista': () => {
+    const d = ui.draft;
+    const blank = { store: '', shipping: 0, items: [] };
+    let env;
+    if (d.envId === 'nuevo') {
+      if (!d.name.trim()) return toast('Escribe el nombre de la lista');
+      env = { id: E.uid(), name: d.name.trim(), icon: '🛒', group: 'necesidad', monthly: 0, priority: 9, partnerAmount: 0, order: blank, updatedAt: Date.now() };
+      state.envelopes.push(env);
+    } else {
+      env = envById(d.envId);
+      env.order = blank;
+      env.updatedAt = Date.now();
+    }
+    ui.orderId = env.id;
+    closeModal(); commit('Lista creada ✓');
+  },
+  'order-prune': () => {
+    const env = currentOrder();
+    const min = Number(document.getElementById('o-min')?.value) || 3;
+    const removed = env.order.items.map((item, index) => ({ item, index })).filter(({ item }) => !item.timesPlus && num(item.times) < min);
+    if (!removed.length) return toast(`Todos se compraron ${min} veces o más`);
+    if (!confirm(`¿Quitar ${removed.length} productos comprados menos de ${min} veces? Quedarán ${env.order.items.length - removed.length}. Podrás deshacerlo.`)) return;
+    const gone = new Set(removed.map((r) => r.item));
+    env.order.items = env.order.items.filter((it) => !gone.has(it));
+    env.updatedAt = Date.now();
+    undoable(toTrash('productos', `${removed.length} productos de ${env.name}`, removed, { envId: env.id }), `${removed.length} productos quitados`);
   },
   'save-producto': () => {
     const d = ui.draft;
-    const env = orderEnvelope();
+    const env = currentOrder();
     if (!env || !d.name.trim()) return toast('Escribe el nombre del producto');
     env.order.items.push({ id: E.uid(), name: d.name.trim(), price: num(d.price), qty: Math.max(1, Math.round(num(d.qty)) || 1), selected: true });
     env.updatedAt = Date.now();
     closeModal(); commit('Producto agregado ✓');
   },
   'del-order-item': (el) => {
-    const env = orderEnvelope();
+    const env = currentOrder();
     const index = Number(el.dataset.i);
     const [item] = env.order.items.splice(index, 1);
     env.updatedAt = Date.now();
-    undoable(toTrash('producto', item.name, item, { envId: env.id, index }), `“${item.name}” quitado del pedido`);
+    undoable(toTrash('producto', item.name, item, { envId: env.id, index }), `“${item.name}” quitado de la lista`);
   },
   'order-mark': (el) => {
-    const env = orderEnvelope();
+    const env = currentOrder();
     for (const it of env.order.items) it.selected = el.dataset.v === '1';
     env.updatedAt = Date.now();
     commit();
   },
   'order-use-avg': () => {
-    const env = orderEnvelope();
+    const env = currentOrder();
     const last = state.expenses.filter((x) => x.envId === env.id && x.order).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
     if (!last.length) return;
     env.monthly = Math.ceil(last.reduce((s, x) => s + num(x.order.total), 0) / last.length);
@@ -1478,20 +1535,20 @@ const ACTIONS = {
     commit('Presupuesto actualizado al promedio');
   },
   'save-order': () => {
-    const env = orderEnvelope();
+    const env = currentOrder();
     const r = E.orderSummary(env);
     if (!r.total) return;
     const cur = E.envCurrency(state, env);
-    if (!confirm(`¿Registrar el pedido de ${fmtIn(r.total, cur)}? Se anotará tu parte (${fmtIn(r.mine, cur)}) como gasto del sobre “${env.name}”.`)) return;
+    if (!confirm(`¿Registrar la compra de ${fmtIn(r.total, cur)}? Se anotará ${r.partner ? `tu parte (${fmtIn(r.mine, cur)})` : 'ese monto'} como gasto del sobre “${env.name}”.`)) return;
     const expense = {
       id: E.uid(), date: E.todayISO(), envId: env.id,
       amount: Math.round(E.envToBase(state, env, r.mine) * 100) / 100,
-      note: `Pedido familiar (${r.units} productos)`,
+      note: `${env.name} (${r.units} productos)`,
       order: { total: r.total, partner: r.partner, units: r.units, currency: cur, items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
     };
     if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
     state.expenses.push(expense);
-    commit('Pedido registrado ✓');
+    commit('Compra registrada ✓');
   },
   resolve: (el) => {
     const id = el.dataset.rec;

@@ -495,3 +495,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .table td.check-cell { min-width: 0; width: 28px; }
 .btn.link.food-name { font-weight: 600; color: var(--label); padding: 0; height: auto; text-align: left; }
 .btn.link.food-name:hover { color: var(--accent); }
+
+/* Listas de compra: nombre del producto legible */
+.table input[data-field="name"][data-order-item] { min-width: 300px; }
