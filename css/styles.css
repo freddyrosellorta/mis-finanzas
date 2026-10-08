@@ -503,3 +503,62 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .bought-tag .btn.link { height: auto; font-size: 11px; }
 /* Listas de compra: nombre del producto legible */
 .table input[data-field="name"][data-order-item] { min-width: 300px; }
+
+/* ---------- iPhone y pantallas angostas ---------- */
+@media (max-width: 640px) {
+  /* Encabezado: el selector de mes va debajo del título y nunca se sale del borde. */
+  .page-head { flex-direction: column; align-items: stretch; }
+  .page-head .month-nav { align-self: flex-start; max-width: 100%; }
+  .month-nav span { min-width: 0; flex: 1; }
+
+  /* Tablas de productos como tarjetas: sin desplazamiento horizontal.
+     Fila 1: casilla · nombre · quitar. Fila 2: tipo. Fila 3: precio · cantidad · subtotal. */
+  .table-wrap:has(.card-table) { overflow: visible; }
+  .card-table, .card-table tbody { display: block; width: 100%; }
+  .card-table thead { display: none; }
+  .card-table tr {
+    display: grid; grid-template-columns: 30px repeat(3, minmax(0, 1fr)) 40px; gap: 8px; align-items: end;
+    padding: 10px 12px; margin-bottom: 8px; border-radius: 12px; background: var(--content-bg); border: 0.5px solid var(--group-border);
+  }
+  .card-table tbody tr:nth-child(even) td { background: none; }
+  .card-table td { display: block; padding: 0; min-width: 0 !important; text-align: left; }
+  .card-table td.c-check { grid-column: 1; grid-row: 1; align-self: center; }
+  .card-table td.c-name { grid-column: 2 / 5; grid-row: 1; align-self: center; }
+  .food-table td.c-name { grid-column: 1 / 5; }
+  .card-table td.c-del { grid-column: 5; grid-row: 1; align-self: center; justify-self: end; }
+  .card-table td.c-name .input, .card-table input[data-field="name"][data-order-item] { min-width: 0; width: 100%; }
+  .card-table td.c-times { display: none; }
+  .card-table td.c-type { grid-column: 1 / 6; }
+  .card-table td.c-type .popup { width: 100%; }
+  .card-table td.c-price { grid-column: 1 / 3; }
+  .card-table td.c-qty { grid-column: 3 / 4; }
+  .card-table td.r { text-align: left; }
+  .card-table td.c-sub, .card-table td.c-sub.r { grid-column: 4 / 6; text-align: right; font-weight: 600; line-height: 44px; }
+  .food-table td.c-qty { grid-column: 1 / 3; grid-row: 3; }
+  .food-table td.c-price { grid-column: 3 / 4; grid-row: 3; }
+  .food-table td.c-sub { grid-column: 4 / 6; grid-row: 3; }
+  .food-table td.c-buy { grid-column: 1 / 6; grid-row: 4; display: flex; justify-content: space-between; color: var(--label-2); }
+  .card-table td[data-label]::before { content: attr(data-label); display: block; color: var(--label-2); font-size: 13px; line-height: 18px; font-weight: 400; }
+  .card-table td.c-sub[data-label]::before { line-height: 18px; }
+  .food-table td.c-buy[data-label]::before { display: inline; }
+  .card-table td.c-price .input, .card-table td.c-qty .input { width: 100% !important; text-align: right; }
+  .card-table td.c-price .money .input { padding-left: 20px; }
+  .card-table tr.group-row { display: block; padding: 18px 2px 6px; margin: 0; background: none; border: 0; }
+  .card-table tr.group-row td { font-size: 15px; line-height: 20px; }
+  .card-table tr.bought { opacity: 0.75; }
+
+  /* Historial y movimientos: montos que se acomodan en vez de empujar la página. */
+  .mov { grid-template-columns: minmax(0, 1fr) auto; }
+  .mov > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+  .mov .amt { flex-wrap: wrap; max-width: 55vw; }
+  .mov .amt .meta { width: 100%; text-align: right; margin-left: 0; }
+  .card .small, .card .sub, .tipcard p { overflow-wrap: anywhere; }
+
+  /* Tablas pequeñas (Hogar, comparaciones): más compactas. */
+  .table th, .table td { padding: 6px 4px; }
+  .table th { white-space: normal; }
+  .table td:first-child { min-width: 0; }
+  .env .detail .tiny span:last-child { white-space: nowrap; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat .v { overflow-wrap: anywhere; }
+}

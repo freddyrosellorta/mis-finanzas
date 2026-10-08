@@ -636,16 +636,16 @@ function viewComida() {
     <section class="card stack">
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
       <p class="sub">Elige cómo se vende cada producto y escribe su precio. La compra se redondea hacia arriba para una semana${t.people > 1 ? ` y ${t.people} personas` : ''}. Toca el nombre de un producto para cambiar cuánto trae su pieza o paquete.</p>
-      <div class="table-wrap"><table class="table">
+      <div class="table-wrap"><table class="table card-table food-table">
         <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th><th class="r">Compra/semana</th><th>Se vende por</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Costo/semana</th><th></th></tr></thead>
         <tbody>${f.items.map((it, i) => `<tr>
-          <td><button class="btn link food-name" data-action="open" data-modal="alimento" data-index="${i}" title="Editar ${esc(it.name)}">${esc(it.name)}</button><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
-          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
-          <td class="r num">${purchase(it, t.people, i)}</td>
-          <td><span class="popup" style="min-width:126px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
-          <td class="r"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
-          <td class="r num">${E.weeklyCost(it, t.people) ? fmtCost(E.weeklyCost(it, t.people)) : '<span class="muted">—</span>'}</td>
-          <td><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
+          <td class="c-name"><button class="btn link food-name" data-action="open" data-modal="alimento" data-index="${i}" title="Editar ${esc(it.name)}">${esc(it.name)}</button><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
+          <td class="r c-qty" data-label="g/día"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
+          <td class="r num c-buy" data-label="Compra/semana">${purchase(it, t.people, i)}</td>
+          <td class="c-type"><span class="popup" style="min-width:126px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
+          <td class="r c-price" data-label="Precio"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
+          <td class="r num c-sub" data-label="Costo/semana">${E.weeklyCost(it, t.people) ? fmtCost(E.weeklyCost(it, t.people)) : '<span class="muted">—</span>'}</td>
+          <td class="c-del"><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
       <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
@@ -834,17 +834,17 @@ function viewPedido(embedded = null) {
       <div class="row between"><h2>Productos habituales</h2><button class="btn sm" data-action="open" data-modal="producto">${sym('plus')} Agregar producto…</button></div>
       <p class="sub">Marca lo que llevan en esta compra y ajusta las cantidades. Los precios se guardan para la siguiente.</p>
       ${hasTimes ? `<div class="row" style="flex-wrap:wrap"><span class="small">Quitar los comprados menos de</span><span class="popup" style="min-width:72px"><select class="input" aria-label="Veces" id="o-min">${[2, 3, 4, 5].map((n) => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></span><span class="small">veces</span><button class="btn sm" data-action="order-prune">Quitar…</button></div>` : ''}
-      ${o.items.length ? `<div class="table-wrap"><table class="table">
+      ${o.items.length ? `<div class="table-wrap"><table class="table card-table list-table">
         <thead><tr><th></th><th>Producto</th>${hasTimes ? '<th class="r">Veces</th>' : ''}${o.monthly ? '<th>Tipo</th>' : ''}<th class="r">Precio (${cur})</th><th class="r" ${o.monthly ? 'title="Semanal: por semana · Quincenal: por quincena · Mensual: por mes"' : ''}>Cantidad</th><th class="r">Subtotal</th><th></th></tr></thead>
         <tbody>${orderRows(o, (it, i) => `<tr class="${o.monthly && E.isBought(it, E.todayISO()) ? 'bought' : ''}">
-          <td class="check-cell"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="Llevar ${esc(it.name)}" data-order-item="${i}" data-field="selected" data-k="oi:${i}:s"></td>
-          <td><input class="input" value="${esc(it.name)}" aria-label="Nombre del producto" data-order-item="${i}" data-field="name" data-k="oi:${i}:n">${o.monthly ? boughtTag(it, i) : ''}</td>
-          ${hasTimes ? `<td class="r num muted">${num(it.times) ? `${it.times}${it.timesPlus ? '+' : ''}` : '—'}</td>` : ''}
-          ${o.monthly ? `<td><span class="popup" style="min-width:116px"><select class="input" aria-label="Tipo de ${esc(it.name)}" data-order-item="${i}" data-field="frequency" data-k="oi:${i}:o">${E.FREQUENCIES.map((f) => `<option value="${f}" ${E.itemFrequency(it) === f ? 'selected' : ''}>${FREQ_NAMES[f]}</option>`).join('')}</select></span></td>` : ''}
-          <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
-          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" step="any" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q"></td>
-          <td class="r num ${it.selected ? '' : 'muted'}">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
-          <td><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
+          <td class="check-cell c-check"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="Llevar ${esc(it.name)}" data-order-item="${i}" data-field="selected" data-k="oi:${i}:s"></td>
+          <td class="c-name"><input class="input" value="${esc(it.name)}" aria-label="Nombre del producto" data-order-item="${i}" data-field="name" data-k="oi:${i}:n">${o.monthly ? boughtTag(it, i) : ''}</td>
+          ${hasTimes ? `<td class="r num muted c-times" data-label="Veces">${num(it.times) ? `${it.times}${it.timesPlus ? '+' : ''}` : '—'}</td>` : ''}
+          ${o.monthly ? `<td class="c-type"><span class="popup" style="min-width:116px"><select class="input" aria-label="Tipo de ${esc(it.name)}" data-order-item="${i}" data-field="frequency" data-k="oi:${i}:o">${E.FREQUENCIES.map((f) => `<option value="${f}" ${E.itemFrequency(it) === f ? 'selected' : ''}>${FREQ_NAMES[f]}</option>`).join('')}</select></span></td>` : ''}
+          <td class="r c-price" data-label="Precio"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
+          <td class="r c-qty" data-label="Cantidad"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" step="any" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q"></td>
+          <td class="r num c-sub ${it.selected ? '' : 'muted'}" data-label="Subtotal">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
+          <td class="c-del"><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
       </table></div>
       <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button><button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
@@ -924,7 +924,7 @@ function viewHogar() {
     <section class="card stack">
       <h2>Quién paga qué</h2>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th></th><th class="r">Aporta</th><th class="r">% de su ingreso</th></tr></thead>
+        <thead><tr><th></th><th class="r">Aporta</th><th class="r">% del ingreso</th></tr></thead>
         <tbody>
           <tr><td><strong>Tú</strong></td><td class="r num">${fmt(ps.myAmount)}</td><td class="r num">${pct(ps.myPctOfIncome)}</td></tr>
           <tr><td><strong>${name}</strong></td><td class="r num">${fmt(ps.herAmount)}</td><td class="r num">${pct(ps.herPctOfIncome)}</td></tr>
