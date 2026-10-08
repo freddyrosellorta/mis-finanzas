@@ -202,6 +202,60 @@ export function envToBase(state, env, amount) {
 }
 
 // Resumen del pedido de un sobre con lista de productos (en la moneda del sobre).
+// ---------- Compra fija mensual ----------
+// Una lista puede ser "fija mensual": sus productos fijos (precio × cantidad para un mes) más un margen
+// para compras ocasionales forman el presupuesto del sobre, y se reparte semana a semana.
+
+export const isMonthlyList = (env) => Boolean(env.order && env.order.monthly);
+export const isFixedItem = (it) => !it.occasional;
+
+export function monthlyListBudget(env) {
+  const items = (env.order && env.order.items) || [];
+  const fixed = items.filter(isFixedItem).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+  const occasional = Number(env.order && env.order.occasionalBudget) || 0;
+  return { fixed: Math.round(fixed * 100) / 100, occasional, total: Math.round((fixed + occasional) * 100) / 100 };
+}
+
+// Monto de un gasto en la moneda del sobre (los gastos se guardan en la moneda de ingresos).
+export function expenseInEnvCurrency(state, env, x) {
+  const cur = envCurrency(state, env);
+  if (x.original && x.original.currency === cur) return Number(x.original.amount) || 0;
+  return cur === state.settings.currency ? Number(x.amount) || 0 : baseToCost(state, x.amount);
+}
+
+// Semanas de lunes a domingo dentro del mes: índice (0…) de cada día y total de semanas.
+function weekIndex(dateISO) {
+  const d = new Date(dateISO + 'T12:00:00');
+  const first = new Date(d.getFullYear(), d.getMonth(), 1, 12);
+  const offset = (first.getDay() + 6) % 7; // lunes = 0
+  return Math.floor((d.getDate() - 1 + offset) / 7);
+}
+function weeksInMonth(month) {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0, 12).getDate();
+  return weekIndex(`${month}-${String(last).padStart(2, '0')}`) + 1;
+}
+
+// Cuánto se puede gastar en la semana de `dateISO` (en la moneda del sobre): lo que queda del presupuesto
+// del mes al empezar la semana, repartido entre las semanas que faltan, menos lo gastado esta semana.
+export function weeklyAllowance(state, env, dateISO, budget = null) {
+  const month = dateISO.slice(0, 7);
+  const total = budget ?? (isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0);
+  const wk = weekIndex(dateISO);
+  const weeks = weeksInMonth(month);
+  let before = 0;
+  let thisWeek = 0;
+  for (const x of state.expenses) {
+    if (x.envId !== env.id || monthKey(x.date) !== month) continue;
+    const amount = expenseInEnvCurrency(state, env, x);
+    if (weekIndex(x.date) < wk) before += amount; else if (weekIndex(x.date) === wk) thisWeek += amount;
+  }
+  const weeksLeft = weeks - wk;
+  const forWeek = Math.max(0, (total - before) / weeksLeft);
+  const r = (n) => Math.round(n * 100) / 100;
+  return { budget: total, week: wk + 1, weeks, weeksLeft, forWeek: r(forWeek), spentWeek: r(thisWeek), canSpend: r(forWeek - thisWeek), spentMonth: r(before + thisWeek), leftMonth: r(total - before - thisWeek) };
+}
+
 export function orderSummary(env) {
   const order = env.order || { items: [], shipping: 0 };
   const chosen = (order.items || []).filter((it) => it.selected && Number(it.qty) > 0);
@@ -209,7 +263,7 @@ export function orderSummary(env) {
   const shipping = chosen.length ? Number(order.shipping) || 0 : 0;
   const total = Math.round((products + shipping) * 100) / 100;
   const partner = Math.min(total, Number(env.partnerAmount) || 0);
-  const budget = Number(env.monthly) || 0;
+  const budget = isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0;
   return {
     items: chosen.length,
     units: chosen.reduce((s, it) => s + (Number(it.qty) || 0), 0),
@@ -226,6 +280,12 @@ export function convertCosts(state, factor) {
   const now = Date.now();
   for (const env of state.envelopes) {
     if (env.currency) continue; // los sobres con moneda propia no cambian
+    if (env.order) {
+      for (const it of env.order.items || []) it.price = round(it.price);
+      env.order.shipping = round(env.order.shipping);
+      if (env.order.occasionalBudget) env.order.occasionalBudget = round(env.order.occasionalBudget);
+      env.updatedAt = now;
+    }
     if (isManualEnvelope(env) && Number(env.partnerAmount)) env.partnerAmount = round(env.partnerAmount);
     if (isManualEnvelope(env) && Number(env.monthly)) { env.monthly = round(env.monthly); env.updatedAt = now; }
     if (env.goal && Number(env.goal.target)) { env.goal.target = round(env.goal.target); env.updatedAt = now; }
@@ -238,8 +298,10 @@ export function convertCosts(state, factor) {
 
 function baseMonthly(state, env, month) {
   if (env.role === 'comida' && state.food.linked) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
+  // Lista fija mensual: el presupuesto es lo fijo más el margen para ocasionales.
+  const monthly = isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0;
   // El aporte fijo de la pareja (si lo hay) se descuenta: el sobre solo aparta tu parte.
-  return envToBase(state, env, Math.max(0, (Number(env.monthly) || 0) - (Number(env.partnerAmount) || 0)));
+  return envToBase(state, env, Math.max(0, monthly - (Number(env.partnerAmount) || 0)));
 }
 
 export function needsMonthly(state, month) {
