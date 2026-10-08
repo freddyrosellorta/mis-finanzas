@@ -949,6 +949,27 @@ function foodPriceFields(d) {
   }
 }
 
+// Buscador de alimentos: coincide en cualquier parte del nombre, sin acentos ni mayúsculas.
+const fold = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+function searchProducts(query) {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  const products = foodProducts();
+  if (!words.length) return products;
+  return products
+    .map((p) => ({ p, name: fold(p.name) }))
+    .filter(({ name }) => words.every((w) => name.includes(w)))
+    .sort((a, b) => (a.name.startsWith(words[0]) ? 0 : 1) - (b.name.startsWith(words[0]) ? 0 : 1))
+    .map(({ p }) => p);
+}
+function productResults(query) {
+  const found = searchProducts(query);
+  if (!found.length) return '<p class="small muted" style="padding:8px 4px">Sin resultados. Agrega el producto a tu lista de compras de alimentación.</p>';
+  return found.map((p, i) => {
+    const n = (state.food.nutrition || {})[p.id];
+    return `<button class="search-item ${i === 0 && query ? 'first' : ''}" role="option" data-action="pick-product" data-id="${p.id}"><span>${esc(p.name)}</span><span class="tiny muted">${n ? `${Math.round(n.kcal)} kcal · ${Math.round(n.protein)} g prot /100 g` : 'sin datos nutricionales'}</span></button>`;
+  }).join('');
+}
+
 // Datos nutricionales de un producto (por 100 g), peso de una pieza y contenido de cada unidad comprada.
 const NUTRITION_FIELDS = [['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)']];
 function nutritionDraft(productId) {
@@ -1364,12 +1385,14 @@ function modalHTML() {
       const products = foodProducts();
       const n = (state.food.nutrition || {})[d.productId];
       return `${head(`Agregar a ${MEAL_NAMES[d.meal].toLowerCase()}`)}
-        <div class="field"><label for="po-prod">Producto</label><span class="popup"><select id="po-prod" class="input" data-draft="productId">${products.map((p) => `<option value="${p.id}" ${p.id === d.productId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></span></div>
+        ${d.productId ? `<div class="picked"><span>${esc(foodProducts().find((x) => x.id === d.productId)?.name || '')}</span><button class="btn link sm" data-action="pick-clear">Cambiar</button></div>`
+          : `<div class="field"><label for="po-q">Buscar alimento</label><input id="po-q" class="input" type="search" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe, p. ej. huevo, atún, avena…" value="${esc(d.query)}" data-draft="query" autofocus>
+          <div id="po-results" class="search-results" role="listbox">${productResults(d.query)}</div></div>`}
         <div class="form-grid">
           <div class="field"><label for="po-amt">Cantidad por persona</label><input id="po-amt" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="amount" value="${esc(d.amount)}"></div>
           <div class="field"><label for="po-unit">Unidad</label><span class="popup"><select id="po-unit" class="input" data-draft="unit"><option value="g" ${d.unit === 'g' ? 'selected' : ''}>gramos</option><option value="pza" ${d.unit === 'pza' ? 'selected' : ''}>piezas</option></select></span></div>
         </div>
-        ${n ? `<p class="small ink-2">Por 100 g: ${macroLine(n)}.${num(n.pieceGrams) ? ` Una pieza ≈ ${n.pieceGrams} g.` : ''}</p>` : `<p class="small warn-ink">Este producto aún no tiene datos nutricionales; agrégalos para que cuente en tus metas.</p>${nutritionFields(d)}`}
+        ${!d.productId ? '' : n ? `<p class="small ink-2">Por 100 g: ${macroLine(n)}.${num(n.pieceGrams) ? ` Una pieza ≈ ${n.pieceGrams} g.` : ''}</p>` : `<p class="small warn-ink">Este producto aún no tiene datos nutricionales; agrégalos para que cuente en tus metas.</p>${nutritionFields(d)}`}
         ${d.unit === 'pza' && n && !num(n.pieceGrams) ? '<p class="small warn-ink">Para usar piezas, indica el peso de una pieza en sus datos nutricionales.</p>' : ''}
         ${foot('Agregar', 'save-porcion')}`;
     }
@@ -1442,7 +1465,7 @@ function openModal(name, data = {}) {
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
   if (name === 'porcion') {
     const first = foodProducts()[0];
-    Object.assign(base, { meal: data.meal, productId: first?.id, amount: '', unit: 'g', ...nutritionDraft(first?.id) });
+    Object.assign(base, { meal: data.meal, productId: null, query: '', amount: '', unit: 'g' });
   }
   if (name === 'nutricion') Object.assign(base, { productId: data.product, ...nutritionDraft(data.product) });
   if (name === 'mover-lista') { const f = foodEnvelope(); base.to = f && f.id !== currentOrder()?.id ? f.id : orderLists().find((e) => e.id !== currentOrder()?.id)?.id; }
@@ -1658,6 +1681,9 @@ document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (!el.dataset.draft) return;
   ui.draft[el.dataset.draft] = el.value;
+  if (ui.modal === 'porcion' && el.dataset.draft === 'query') {
+    document.getElementById('po-results').innerHTML = productResults(el.value);
+  }
   if ((ui.modal === 'pago' || ui.modal === 'saldo') && ['amount', 'rate'].includes(el.dataset.draft)) {
     const eq = document.getElementById('fx-equiv');
     if (eq) eq.textContent = fxEquiv(ui.draft);
@@ -1742,9 +1768,20 @@ const ACTIONS = {
     commit(on ? 'Fondo de emergencia activado ✓' : 'Fondo de emergencia en pausa');
   },
   'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = envById(el.dataset.id)?.role === 'comida' ? 'comida' : 'pedido'; render(); window.scrollTo(0, 0); },
+  'pick-product': (el) => {
+    const n = (state.food.nutrition || {})[el.dataset.id];
+    Object.assign(ui.draft, { productId: el.dataset.id, ...nutritionDraft(el.dataset.id), unit: n && num(n.pieceGrams) ? 'pza' : 'g' });
+    renderModal();
+    $modal.querySelector('#po-amt')?.focus();
+  },
+  'pick-clear': () => {
+    ui.draft.productId = null;
+    renderModal();
+    $modal.querySelector('#po-q')?.focus();
+  },
   'save-porcion': () => {
     const d = ui.draft;
-    if (!d.productId) return;
+    if (!d.productId) return toast('Busca y elige un alimento');
     if (!(num(d.amount) > 0)) return toast('Escribe la cantidad');
     if (!state.food.nutrition?.[d.productId]) {
       if (!saveNutrition(d)) return;
@@ -2017,6 +2054,11 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && ui.modal) closeModal();
+  if (ev.key === 'Enter' && ui.modal === 'porcion' && ev.target.id === 'po-q') {
+    ev.preventDefault();
+    $modal.querySelector('[data-action="pick-product"]')?.click();
+    return;
+  }
   if (ev.key === 'Enter' && ui.modal && ev.target.tagName === 'INPUT') {
     const btn = $modal.querySelector('.sheet-foot .btn.primary');
     if (btn) { ev.preventDefault(); btn.click(); }

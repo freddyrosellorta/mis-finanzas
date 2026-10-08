@@ -520,6 +520,16 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   .portion-macros { grid-column: 1 / 3; }
 }
 
+/* Buscador de alimentos */
+.search-results { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; margin-top: 6px; border-radius: 8px; border: 0.5px solid var(--group-border); background: var(--content-bg); }
+.search-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border: 0; background: none; text-align: left; font: inherit; color: var(--label); }
+.search-item + .search-item { border-top: 0.5px solid var(--separator); }
+.search-item:hover, .search-item.first { background: var(--fill); }
+.search-item span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.search-item .tiny { flex: none; }
+.picked { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--fill); font-weight: 600; }
+@media (max-width: 640px) { .search-item { min-height: 48px; } .search-item .tiny { display: none; } }
+
 /* ---------- iPhone y pantallas angostas ---------- */
 @media (max-width: 640px) {
   /* Encabezado: el selector de mes va debajo del título y nunca se sale del borde. */
