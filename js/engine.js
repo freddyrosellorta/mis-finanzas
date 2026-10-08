@@ -375,7 +375,7 @@ export function convertCosts(state, factor) {
 // ---------- Metas mensuales ----------
 
 function baseMonthly(state, env, month) {
-  if (env.role === 'comida' && state.food.linked) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
+  if (env.role === 'comida' && state.food.linked && !isMonthlyList(env)) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
   // Lista fija mensual: el presupuesto es lo fijo más el margen para ocasionales.
   const monthly = isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0;
   // El aporte fijo de la pareja (si lo hay) se descuenta: el sobre solo aparta tu parte.

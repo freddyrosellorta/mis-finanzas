@@ -624,7 +624,7 @@ function viewComida() {
         <div class="field"><label for="people">Personas que comen este menú</label><input id="people" class="input" type="number" inputmode="numeric" min="1" max="10" step="1" value="${esc(t.people)}" ${bind('food.people')}><span class="help">Los gramos del menú son por persona; la compra y el costo se multiplican.</span></div>
       </div>
       <label class="check switch-row"><span>Contar carbohidratos netos (sin fibra)</span><input type="checkbox" switch ${f.netCarbs ? 'checked' : ''} ${bind('food.netCarbs', 'bool')}></label>
-      <label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>
+      ${E.isMonthlyList(foodEnvelope() || {}) ? '<p class="small ink-2">El presupuesto del sobre “Alimentación” lo define tu lista de compras de alimentación (abajo).</p>' : `<label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>`}
       ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmtCost(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
     </section>
 
@@ -644,7 +644,23 @@ function viewComida() {
         </tr>`).join('')}</tbody>
       </table></div>
       <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
+    </section>
+    ${foodListSection()}`;
+}
+
+// Lista de compras de alimentación (las mismas funciones que Listas de compra).
+function foodListSection() {
+  const env = foodEnvelope();
+  if (!env) return '';
+  if (!env.order) {
+    return `<section class="card stack">
+      <h2>Compras de alimentación</h2>
+      <p class="sub">Una lista de compras propia para la comida, con productos semanales, quincenales, mensuales y ocasionales, como la del hogar. También puedes mover productos desde otra lista con “Mover marcados…”.</p>
+      <div><button class="btn primary" data-action="create-food-list">${sym('plus')} Crear lista de alimentación</button></div>
     </section>`;
+  }
+  return `<div class="page-head" style="margin-top:12px"><div><h1 style="font-size:22px;line-height:26px">Compras de alimentación</h1><p>${esc(env.icon)} ${esc(env.name)}${env.order.store ? ` · ${esc(env.order.store)}` : ''}</p></div></div>
+    ${viewPedido(env)}`;
 }
 
 // Cómo se vende cada alimento: por kg o litro (precio de 1000 g/ml), por pieza (con su peso) o por paquete (con su contenido).
@@ -676,8 +692,13 @@ function purchase(it, people, index) {
 // Cada lista vive en un sobre (`env.order`): productos habituales con precio y veces comprado. En cada compra
 // se marcan los que se llevan, se suma el envío (si hay) y se registra como gasto (tu parte, si tu pareja aporta).
 
-const orderLists = () => state.envelopes.filter((e) => e.order);
-const currentOrder = () => orderLists().find((e) => e.id === ui.orderId) || orderLists()[0];
+// La lista de Alimentación vive en su pestaña; las demás en Listas de compra.
+const foodEnvelope = () => state.envelopes.find((e) => e.role === 'comida');
+const orderLists = () => state.envelopes.filter((e) => e.order && e.role !== 'comida');
+const currentOrder = () => {
+  if (ui.view === 'comida') { const f = foodEnvelope(); return f && f.order ? f : null; }
+  return orderLists().find((e) => e.id === ui.orderId) || orderLists()[0];
+};
 
 // Tarjeta "Esta semana puedes gastar" de una lista fija (solo en el mes actual).
 function weeklyCard(env, compact = false) {
@@ -750,8 +771,9 @@ function pendingNote(env) {
   return `<span class="small ink-2">Pendientes: ${parts.join(' · ')}</span>`;
 }
 
-function viewPedido() {
-  const env = currentOrder();
+// `embedded`: la lista se muestra dentro de otra pestaña (Alimentación), sin título ni selector.
+function viewPedido(embedded = null) {
+  const env = embedded || currentOrder();
   const lists = orderLists();
   const switcher = `<div class="row" style="flex-wrap:wrap">
       ${lists.length > 1 ? `<div class="segmented" role="radiogroup" aria-label="Lista">${lists.map((l) => `<label><input type="radio" name="olist" value="${l.id}" ${l.id === env?.id ? 'checked' : ''} data-order-list><span>${esc(l.icon)} ${esc(l.name)}</span></label>`).join('')}</div>` : ''}
@@ -777,8 +799,8 @@ function viewPedido() {
     : r.diff >= 0 ? { level: 'good', icon: 'checkmark.circle.fill', title: `Cabe en el presupuesto: sobran ${fmtIn(r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}.` }
     : { level: 'warning', icon: 'exclamationmark.triangle.fill', title: `Te pasas por ${fmtIn(-r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}. Quita algún producto o mueve dinero de otro sobre.` };
 
-  return `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
-    ${switcher}
+  return `${embedded ? '' : `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
+    ${switcher}`}
 
     <section class="card stack">
       <h2>Presupuesto</h2>
@@ -820,7 +842,7 @@ function viewPedido() {
           <td><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
       </table></div>
-      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
+      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button><button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
     </section>
 
     <section class="card stack">
@@ -1247,6 +1269,16 @@ function modalHTML() {
         ${d.list == null ? '<p class="muted">Cargando copias…</p>' : d.list.length ? `<div class="group-box">${d.list.map((c, i) => `<div class="mov"><div><strong>${esc(nice(c.label))}</strong><div class="meta">${when(c.at)}</div></div><div class="amt"><button class="btn sm" data-action="backup-pick" data-i="${i}">Restaurar…</button></div></div>`).join('')}</div>` : `<p class="muted">Todavía no hay copias${isNative ? '' : ' en este dispositivo. Puedes importar un respaldo exportado.'}</p>`}
         <div class="sheet-foot"><button class="btn" data-action="close">Cerrar</button></div>`;
     }
+    case 'mover-lista': {
+      const from = currentOrder();
+      const count = from ? from.order.items.filter((it) => it.selected).length : 0;
+      const food = foodEnvelope();
+      const targets = [...(food && food.id !== from?.id ? [food] : []), ...orderLists().filter((e) => e.id !== from?.id)];
+      return `${head(`Mover ${count} ${count === 1 ? 'producto' : 'productos'}`)}
+        <p class="small ink-2">Se llevan su tipo (semanal, quincenal…), precio, cantidad y estado de comprado.</p>
+        <div class="field"><label for="mv-to">A la lista</label><span class="popup"><select id="mv-to" class="input" data-draft="to">${targets.map((e) => `<option value="${e.id}" ${e.id === d.to ? 'selected' : ''}>${esc(e.icon)} ${e.role === 'comida' ? 'Alimentación' : esc(e.name)}${e.order ? '' : ' (se crea la lista)'}</option>`).join('')}</select></span></div>
+        ${foot('Mover', 'save-mover-lista')}`;
+    }
     case 'nueva-lista': {
       const candidates = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
       return `${head('Nueva lista de compra')}
@@ -1297,6 +1329,7 @@ function openModal(name, data = {}) {
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
+  if (name === 'mover-lista') { const f = foodEnvelope(); base.to = f && f.id !== currentOrder()?.id ? f.id : orderLists().find((e) => e.id !== currentOrder()?.id)?.id; }
   if (name === 'nueva-lista') {
     const free = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
     const pick = free.find((e) => e.id === 'hogar' || /súper|super/i.test(e.name)) || free.find((e) => e.role !== 'renta') || free[0];
@@ -1478,6 +1511,8 @@ document.addEventListener('change', (ev) => {
   } else if (el.matches('[data-order-list]')) {
     ui.orderId = el.value;
     render();
+  } else if (el.dataset.draft === 'to' && ui.modal === 'mover-lista') {
+    ui.draft.to = el.value;
   } else if (el.dataset.draft === 'envId' && ui.modal === 'nueva-lista') {
     ui.draft.envId = el.value;
     renderModal();
@@ -1573,7 +1608,34 @@ const ACTIONS = {
     env.updatedAt = Date.now();
     commit(`“${it.name}” vuelve a estar pendiente`);
   },
-  'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = 'pedido'; render(); window.scrollTo(0, 0); },
+  'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = envById(el.dataset.id)?.role === 'comida' ? 'comida' : 'pedido'; render(); window.scrollTo(0, 0); },
+  'create-food-list': () => {
+    const env = foodEnvelope();
+    env.order = { monthly: true, store: '', shipping: 0, occasionalBudget: 0, items: [] };
+    env.updatedAt = Date.now();
+    commit('Lista de alimentación creada ✓');
+  },
+  'save-mover-lista': () => {
+    const from = currentOrder();
+    const to = envById(ui.draft.to);
+    if (!from || !to) return;
+    if (!to.order) to.order = { monthly: from.order.monthly, store: from.order.store || '', shipping: 0, occasionalBudget: 0, items: [] };
+    const moved = from.order.items.map((item, index) => ({ item, index })).filter(({ item }) => item.selected);
+    if (!moved.length) return toast('Marca primero los productos que quieres mover');
+    const set = new Set(moved.map((m) => m.item));
+    from.order.items = from.order.items.filter((it) => !set.has(it));
+    for (const { item } of moved) { item.selected = false; to.order.items.push(item); }
+    from.updatedAt = to.updatedAt = Date.now();
+    closeModal();
+    commit();
+    const name = to.role === 'comida' ? 'Alimentación' : to.name;
+    toast(`${moved.length} ${moved.length === 1 ? 'producto movido' : 'productos movidos'} a ${name}`, { label: 'Deshacer', run: () => {
+      to.order.items = to.order.items.filter((it) => !set.has(it));
+      for (const { item, index } of moved) from.order.items.splice(Math.min(index, from.order.items.length), 0, item);
+      from.updatedAt = to.updatedAt = Date.now();
+      commit('Movimiento deshecho');
+    } });
+  },
   'save-lista': () => {
     const d = ui.draft;
     const blank = { store: '', shipping: 0, items: [] };
