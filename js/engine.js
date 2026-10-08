@@ -119,6 +119,55 @@ export function weeklyPurchase(item, people = 1) {
   return { amount: step, everyWeeks: Math.max(1, Math.floor(step / exact)), exact };
 }
 
+// ---------- Menú por comidas ----------
+// Cada comida tiene porciones de productos de la lista de alimentación. Los datos nutricionales
+// van por producto (por 100 g); una porción puede ser en gramos o en piezas (con el peso de una pieza).
+
+export const MEALS = ['desayuno', 'merienda', 'almuerzo', 'preentreno', 'cena'];
+const MACROS = ['kcal', 'protein', 'fat', 'carbs', 'fiber'];
+const zero = () => Object.fromEntries(MACROS.map((k) => [k, 0]));
+
+export function portionGrams(food, entry) {
+  const n = (food.nutrition || {})[entry.productId] || {};
+  const amount = Number(entry.amount) || 0;
+  return entry.unit === 'pza' ? amount * (Number(n.pieceGrams) || 0) : amount;
+}
+
+export function mealTotals(food) {
+  const meals = {};
+  const day = zero();
+  for (const meal of MEALS) {
+    const t = zero();
+    for (const e of (food.meals || {})[meal] || []) {
+      const n = (food.nutrition || {})[e.productId];
+      if (!n) continue;
+      const f = portionGrams(food, e) / 100;
+      for (const k of MACROS) t[k] += (Number(n[k]) || 0) * f;
+    }
+    meals[meal] = t;
+    for (const k of MACROS) day[k] += t[k];
+  }
+  day.netCarbs = Math.max(0, day.carbs - day.fiber);
+  return { meals, day, count: MEALS.reduce((s, m) => s + ((food.meals || {})[m] || []).length, 0) };
+}
+
+const PER_WEEK = { semanal: 1, quincenal: 0.5, mensual: 12 / 52, ocasional: 0 };
+
+// ¿Compras lo que comes? Consumo semanal de cada producto contra lo que se compra a la semana.
+export function consumptionCheck(food, listItems = []) {
+  const people = Math.max(1, Math.round(Number(food.people) || 1));
+  const eat = {};
+  for (const meal of MEALS) for (const e of (food.meals || {})[meal] || []) eat[e.productId] = (eat[e.productId] || 0) + portionGrams(food, e) * 7 * people;
+  return listItems.filter((it) => eat[it.id] > 0).map((it) => {
+    const n = (food.nutrition || {})[it.id] || {};
+    const pack = Number(n.packGrams) || 0;
+    const buy = pack ? (Number(it.qty) || 0) * PER_WEEK[itemFrequency(it)] * pack : null;
+    const ratio = buy == null ? null : buy / eat[it.id];
+    const status = ratio == null ? 'sin-dato' : ratio > 1.15 ? 'de-mas' : ratio < 0.95 ? 'falta' : 'bien';
+    return { id: it.id, name: it.name, eatWeek: Math.round(eat[it.id]), buyWeek: buy == null ? null : Math.round(buy), status, pieceGrams: Number(n.pieceGrams) || 0 };
+  });
+}
+
 export function foodTotals(food) {
   const t = { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, dailyCost: 0 };
   for (const it of food.items) {

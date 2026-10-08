@@ -504,6 +504,22 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 /* Listas de compra: nombre del producto legible */
 .table input[data-field="name"][data-order-item] { min-width: 300px; }
 
+/* Menú por comidas */
+.meal-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: var(--content-bg); border: 0.5px solid var(--group-border); }
+.portion { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 28px; gap: 4px 10px; align-items: center; padding-top: 8px; border-top: 0.5px solid var(--separator); }
+.portion-name { justify-content: flex-start; text-align: left; white-space: normal; height: auto; color: var(--label); font-weight: 500; padding: 0; }
+.portion-amount { display: flex; gap: 6px; align-items: center; }
+.portion-amount .input { width: 76px; text-align: right; }
+.portion-macros { white-space: nowrap; }
+@media (max-width: 640px) {
+  .portion { grid-template-columns: minmax(0, 1fr) 36px; }
+  .portion-name { grid-column: 1; }
+  .portion-del { grid-column: 2; grid-row: 1; }
+  .portion-amount { grid-column: 1 / 3; }
+  .portion-amount .input { flex: 1; width: auto; }
+  .portion-macros { grid-column: 1 / 3; }
+}
+
 /* ---------- iPhone y pantallas angostas ---------- */
 @media (max-width: 640px) {
   /* Encabezado: el selector de mes va debajo del título y nunca se sale del borde. */

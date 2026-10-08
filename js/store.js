@@ -104,6 +104,8 @@ export function defaultState() {
       netCarbs: false,   // comparar carbohidratos netos (sin fibra) en lugar de totales
       extraMonthly: 20,
       targets: { kcal: 3150, protein: 197, fat: 105, carbs: 355, fiber: 44 },
+      meals: {},         // { desayuno: [{ id, productId, amount, unit: 'g' | 'pza' }], … }
+      nutrition: {},     // { productId: { kcal, protein, fat, carbs, fiber (por 100 g), pieceGrams, packGrams } }
       items: FOOD_ITEMS.map((x) => ({ ...x })),
     },
   };

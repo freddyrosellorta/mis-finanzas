@@ -590,6 +590,8 @@ function envEditor(e, m) {
 function viewComida() {
   const f = state.food;
   const t = E.foodTotals(f);
+  const mt = E.mealTotals(f);
+  const fromMeals = mt.count > 0 || !f.items.length;
   const tg = f.targets;
   const macros = [
     ['kcal', 'Calorías', 'kcal', 0.03], ['protein', 'Proteína', 'g', 0.03], ['fat', 'Grasas', 'g', 0.05],
@@ -602,9 +604,10 @@ function viewComida() {
   return `<div class="page-head"><div><h1>Alimentación</h1><p>Tu plan diario de nutrición convertido en presupuesto de súper.</p></div></div>
     <section class="card stack">
       <h2>Metas diarias de nutrición</h2>
-      <p class="sub">Ajusta los gramos de cada alimento hasta que todo quede en ✓. Las metas se pueden editar.</p>
+      <p class="sub">${fromMeals ? 'Suma de todas las comidas de tu menú (por persona). Ajusta las porciones hasta que todo quede en ✓.' : 'Ajusta los gramos de cada alimento hasta que todo quede en ✓.'} Las metas se pueden editar.</p>
       ${macros.map(([k, label, unit, tol]) => {
-        const v = k === 'carbs' && f.netCarbs ? t.netCarbs : t[k]; const goal = num(tg[k]);
+        const src = fromMeals ? mt.day : t;
+        const v = k === 'carbs' && f.netCarbs ? src.netCarbs : src[k]; const goal = num(tg[k]);
         const diff = v - goal;
         const ok = k === 'fiber' ? v >= goal : Math.abs(diff) <= goal * tol || (k === 'protein' && diff >= 0 && diff <= goal * 0.08);
         return `<div class="macro">
@@ -614,6 +617,8 @@ function viewComida() {
         </div>`;
       }).join('')}
     </section>
+
+    ${mealPlanner()}
 
     <section class="card stack">
       <h2>Costo</h2>
@@ -633,7 +638,7 @@ function viewComida() {
       ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmtCost(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
     </section>
 
-    <section class="card stack">
+    ${f.items.length ? `<section class="card stack">
       <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
       <p class="sub">Elige cómo se vende cada producto y escribe su precio. La compra se redondea hacia arriba para una semana${t.people > 1 ? ` y ${t.people} personas` : ''}. Toca el nombre de un producto para cambiar cuánto trae su pieza o paquete.</p>
       <div class="table-wrap"><table class="table card-table food-table">
@@ -649,8 +654,64 @@ function viewComida() {
         </tr>`).join('')}</tbody>
       </table></div>
       <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
-    </section>
+    </section>` : ''}
     ${foodListSection()}`;
+}
+
+// ---------- Menú por comidas ----------
+const MEAL_NAMES = { desayuno: 'Desayuno', merienda: 'Merienda', almuerzo: 'Almuerzo', preentreno: 'Preentreno', cena: 'Cena' };
+const foodProducts = () => foodEnvelope()?.order?.items || [];
+const macroLine = (n) => `${Math.round(n.kcal)} kcal · ${Math.round(n.protein)} g prot · ${Math.round(n.fat)} g grasa · ${Math.round(n.carbs)} g carbs`;
+
+function mealPlanner() {
+  const f = state.food;
+  const products = foodProducts();
+  if (!products.length) {
+    return `<section class="card stack"><h2>Menú por comidas</h2>
+      <p class="sub">Primero agrega los productos que compras a tu lista de compras de alimentación (abajo); luego arma aquí el desayuno, la merienda, el almuerzo, el preentreno y la cena con porciones de esos productos.</p></section>`;
+  }
+  const mt = E.mealTotals(f);
+  const goalKcal = num(f.targets.kcal);
+  const cards = E.MEALS.map((m) => {
+    const entries = (f.meals || {})[m] || [];
+    const tot = mt.meals[m];
+    const share = goalKcal ? Math.round((tot.kcal / goalKcal) * 100) : 0;
+    const rows = entries.map((e, i) => {
+      const p = products.find((x) => x.id === e.productId);
+      const n = (f.nutrition || {})[e.productId];
+      const g = E.portionGrams(f, e);
+      const units = n && num(n.pieceGrams) ? ['g', 'pza'] : ['g'];
+      return `<div class="portion">
+        <button class="btn link portion-name" data-action="open" data-modal="nutricion" data-product="${e.productId}" title="Datos nutricionales">${esc(p ? p.name : 'Producto eliminado')}</button>
+        <div class="portion-amount"><input class="input num" type="number" inputmode="decimal" min="0" step="any" value="${esc(e.amount)}" aria-label="Cantidad" data-meal="${m}" data-meal-i="${i}" data-field="amount" data-k="m:${m}:${i}:a">
+          <span class="popup" style="min-width:76px"><select class="input" aria-label="Unidad" data-meal="${m}" data-meal-i="${i}" data-field="unit" data-k="m:${m}:${i}:u">${units.map((u) => `<option value="${u}" ${(e.unit || 'g') === u ? 'selected' : ''}>${u === 'g' ? 'g' : 'pzas'}</option>`).join('')}</select></span></div>
+        <div class="tiny muted portion-macros">${n ? `${e.unit === 'pza' ? `${Math.round(g)} g · ` : ''}${Math.round(n.kcal * g / 100)} kcal · ${Math.round(n.protein * g / 100)} g prot` : '<span class="warn-ink">Faltan datos nutricionales</span>'}</div>
+        <button class="icon-btn portion-del" data-action="del-portion" data-meal="${m}" data-i="${i}" aria-label="Quitar" title="Quitar">${sym('trash')}</button>
+      </div>`;
+    }).join('');
+    return `<div class="meal-card">
+      <div class="row between" style="flex-wrap:wrap"><h3>${MEAL_NAMES[m]}</h3><span class="small ink-2">${entries.length ? `${macroLine(tot)} · <strong>${share}% del día</strong>` : 'Sin alimentos'}</span></div>
+      ${rows}
+      <div><button class="btn sm" data-action="open" data-modal="porcion" data-meal="${m}">${sym('plus')} Agregar a ${MEAL_NAMES[m].toLowerCase()}…</button></div>
+    </div>`;
+  }).join('');
+  const check = E.consumptionCheck(f, products);
+  const statusText = { 'de-mas': ['warn-ink', 'Compras de más'], falta: ['warn-ink', 'No alcanza'], bien: ['ok-ink', '✓ Justo'], 'sin-dato': ['muted', 'Falta cuánto trae'] };
+  const qtyText = (g, c) => (c.pieceGrams ? `${Math.round(g / c.pieceGrams)} pzas` : g >= 1000 ? `${Math.round(g / 100) / 10} kg` : `${g} g`);
+  return `<section class="card stack">
+      <h2>Menú por comidas</h2>
+      <p class="sub">Porciones por persona. Toca un producto para ver o cambiar sus datos nutricionales.</p>
+      <div class="stack" style="gap:10px">${cards}</div>
+      <div class="small"><strong>Total del día:</strong> ${macroLine(mt.day)} · fibra ${Math.round(mt.day.fiber)} g</div>
+    </section>
+    ${check.length ? `<section class="card stack">
+      <h2>¿Compras lo que comes?</h2>
+      <p class="sub">Lo que comen en una semana (${num(f.people) || 1} ${num(f.people) === 1 ? 'persona' : 'personas'}) contra lo que compras por semana.</p>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Producto</th><th class="r">Comen/sem</th><th class="r">Compras/sem</th><th class="r">Estado</th></tr></thead>
+        <tbody>${check.map((c) => `<tr><td>${esc(c.name)}</td><td class="r num">${qtyText(c.eatWeek, c)}</td><td class="r num">${c.buyWeek == null ? '—' : qtyText(c.buyWeek, c)}</td><td class="r ${statusText[c.status][0]}">${c.status === 'sin-dato' ? `<button class="btn link sm" data-action="open" data-modal="nutricion" data-product="${c.id}">Falta cuánto trae…</button>` : statusText[c.status][1]}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </section>` : ''}`;
 }
 
 // Lista de compras de alimentación (las mismas funciones que Listas de compra).
@@ -886,6 +947,30 @@ function foodPriceFields(d) {
     case 'litro': return price('Precio por litro');
     default: return price('Precio por kg');
   }
+}
+
+// Datos nutricionales de un producto (por 100 g), peso de una pieza y contenido de cada unidad comprada.
+const NUTRITION_FIELDS = [['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)']];
+function nutritionDraft(productId) {
+  const n = (state.food.nutrition || {})[productId] || {};
+  return { n_kcal: n.kcal ?? '', n_protein: n.protein ?? '', n_fat: n.fat ?? '', n_carbs: n.carbs ?? '', n_fiber: n.fiber ?? '', n_pieceGrams: n.pieceGrams || '', n_packGrams: n.packGrams || '' };
+}
+function nutritionFields(d) {
+  const field = (k, label, help = '') => `<div class="field"><label for="nf-${k}">${label}</label><input id="nf-${k}" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="n_${k}" value="${esc(d[`n_${k}`])}">${help ? `<span class="help">${help}</span>` : ''}</div>`;
+  return `<div class="form-grid">${NUTRITION_FIELDS.map(([k, l]) => field(k, `${l} por 100 g`)).join('')}</div>
+    <div class="form-grid">
+      ${field('pieceGrams', 'Peso de una pieza (g)', 'Opcional: para porciones en piezas (un huevo ≈ 50 g).')}
+      ${field('packGrams', 'Cuánto trae cada unidad que compras (g)', 'Para comparar con lo que comen (cartón de 30 huevos ≈ 1,500 g).')}
+    </div>`;
+}
+function saveNutrition(d) {
+  if (!(num(d.n_kcal) > 0)) { toast('Escribe al menos las calorías por 100 g'); return false; }
+  (state.food.nutrition ||= {})[d.productId] = {
+    kcal: num(d.n_kcal), protein: num(d.n_protein), fat: num(d.n_fat), carbs: num(d.n_carbs), fiber: num(d.n_fiber),
+    pieceGrams: num(d.n_pieceGrams), packGrams: num(d.n_packGrams),
+  };
+  touch('food');
+  return true;
 }
 
 function viewMas() {
@@ -1275,6 +1360,26 @@ function modalHTML() {
         ${d.list == null ? '<p class="muted">Cargando copias…</p>' : d.list.length ? `<div class="group-box">${d.list.map((c, i) => `<div class="mov"><div><strong>${esc(nice(c.label))}</strong><div class="meta">${when(c.at)}</div></div><div class="amt"><button class="btn sm" data-action="backup-pick" data-i="${i}">Restaurar…</button></div></div>`).join('')}</div>` : `<p class="muted">Todavía no hay copias${isNative ? '' : ' en este dispositivo. Puedes importar un respaldo exportado.'}</p>`}
         <div class="sheet-foot"><button class="btn" data-action="close">Cerrar</button></div>`;
     }
+    case 'porcion': {
+      const products = foodProducts();
+      const n = (state.food.nutrition || {})[d.productId];
+      return `${head(`Agregar a ${MEAL_NAMES[d.meal].toLowerCase()}`)}
+        <div class="field"><label for="po-prod">Producto</label><span class="popup"><select id="po-prod" class="input" data-draft="productId">${products.map((p) => `<option value="${p.id}" ${p.id === d.productId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></span></div>
+        <div class="form-grid">
+          <div class="field"><label for="po-amt">Cantidad por persona</label><input id="po-amt" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="amount" value="${esc(d.amount)}"></div>
+          <div class="field"><label for="po-unit">Unidad</label><span class="popup"><select id="po-unit" class="input" data-draft="unit"><option value="g" ${d.unit === 'g' ? 'selected' : ''}>gramos</option><option value="pza" ${d.unit === 'pza' ? 'selected' : ''}>piezas</option></select></span></div>
+        </div>
+        ${n ? `<p class="small ink-2">Por 100 g: ${macroLine(n)}.${num(n.pieceGrams) ? ` Una pieza ≈ ${n.pieceGrams} g.` : ''}</p>` : `<p class="small warn-ink">Este producto aún no tiene datos nutricionales; agrégalos para que cuente en tus metas.</p>${nutritionFields(d)}`}
+        ${d.unit === 'pza' && n && !num(n.pieceGrams) ? '<p class="small warn-ink">Para usar piezas, indica el peso de una pieza en sus datos nutricionales.</p>' : ''}
+        ${foot('Agregar', 'save-porcion')}`;
+    }
+    case 'nutricion': {
+      const p = foodProducts().find((x) => x.id === d.productId);
+      return `${head('Datos nutricionales')}
+        <p class="small ink-2"><strong>${esc(p ? p.name : '')}</strong>. Valores por 100 g (de la etiqueta o de tu app de nutrición).</p>
+        ${nutritionFields(d)}
+        ${foot('Guardar', 'save-nutricion')}`;
+    }
     case 'mover-lista': {
       const from = currentOrder();
       const count = from ? from.order.items.filter((it) => it.selected).length : 0;
@@ -1335,6 +1440,11 @@ function openModal(name, data = {}) {
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
+  if (name === 'porcion') {
+    const first = foodProducts()[0];
+    Object.assign(base, { meal: data.meal, productId: first?.id, amount: '', unit: 'g', ...nutritionDraft(first?.id) });
+  }
+  if (name === 'nutricion') Object.assign(base, { productId: data.product, ...nutritionDraft(data.product) });
   if (name === 'mover-lista') { const f = foodEnvelope(); base.to = f && f.id !== currentOrder()?.id ? f.id : orderLists().find((e) => e.id !== currentOrder()?.id)?.id; }
   if (name === 'nueva-lista') {
     const free = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
@@ -1517,6 +1627,16 @@ document.addEventListener('change', (ev) => {
   } else if (el.matches('[data-order-list]')) {
     ui.orderId = el.value;
     render();
+  } else if (el.dataset.meal && el.dataset.mealI != null) {
+    const e = state.food.meals[el.dataset.meal][Number(el.dataset.mealI)];
+    e[el.dataset.field] = el.dataset.field === 'unit' ? el.value : num(el.value);
+    touch('food');
+    persist();
+    scheduleRender();
+  } else if ((el.dataset.draft === 'productId' || el.dataset.draft === 'unit') && ui.modal === 'porcion') {
+    ui.draft[el.dataset.draft] = el.value;
+    if (el.dataset.draft === 'productId') Object.assign(ui.draft, nutritionDraft(el.value));
+    renderModal();
   } else if (el.dataset.draft === 'to' && ui.modal === 'mover-lista') {
     ui.draft.to = el.value;
   } else if (el.dataset.draft === 'envId' && ui.modal === 'nueva-lista') {
@@ -1622,6 +1742,28 @@ const ACTIONS = {
     commit(on ? 'Fondo de emergencia activado ✓' : 'Fondo de emergencia en pausa');
   },
   'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = envById(el.dataset.id)?.role === 'comida' ? 'comida' : 'pedido'; render(); window.scrollTo(0, 0); },
+  'save-porcion': () => {
+    const d = ui.draft;
+    if (!d.productId) return;
+    if (!(num(d.amount) > 0)) return toast('Escribe la cantidad');
+    if (!state.food.nutrition?.[d.productId]) {
+      if (!saveNutrition(d)) return;
+    }
+    if (d.unit === 'pza' && !num(state.food.nutrition[d.productId].pieceGrams)) return toast('Indica el peso de una pieza en los datos nutricionales');
+    (state.food.meals ||= {});
+    (state.food.meals[d.meal] ||= []).push({ id: E.uid(), productId: d.productId, amount: num(d.amount), unit: d.unit });
+    touch('food');
+    closeModal(); commit('Agregado ✓');
+  },
+  'save-nutricion': () => { if (saveNutrition(ui.draft)) { closeModal(); commit('Datos nutricionales guardados ✓'); } },
+  'del-portion': (el) => {
+    const list = state.food.meals[el.dataset.meal];
+    const index = Number(el.dataset.i);
+    const [entry] = list.splice(index, 1);
+    touch('food');
+    commit();
+    toast('Quitado del menú', { label: 'Deshacer', run: () => { list.splice(index, 0, entry); touch('food'); commit(); } });
+  },
   'create-food-list': () => {
     const env = foodEnvelope();
     env.order = { monthly: true, store: '', shipping: 0, occasionalBudget: 0, items: [] };
