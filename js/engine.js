@@ -207,13 +207,35 @@ export function envToBase(state, env, amount) {
 // para compras ocasionales forman el presupuesto del sobre, y se reparte semana a semana.
 
 export const isMonthlyList = (env) => Boolean(env.order && env.order.monthly);
-export const isFixedItem = (it) => !it.occasional;
+// Frecuencia de un producto: semanal, mensual u ocasional (los antiguos "fijos" son mensuales).
+export const FREQUENCIES = ['semanal', 'mensual', 'ocasional'];
+export const itemFrequency = (it) => (FREQUENCIES.includes(it.frequency) ? it.frequency : it.occasional ? 'ocasional' : 'mensual');
+export const isFixedItem = (it) => itemFrequency(it) !== 'ocasional';
+
+// Lunes de la semana de una fecha (semanas de lunes a domingo, aunque crucen de mes).
+export function mondayOf(dateISO) {
+  const d = new Date(dateISO + 'T12:00:00');
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ¿Ya se compró en el periodo actual? Mensual: este mes. Semanal: esta semana. Ocasional: nunca "pendiente".
+export function isBought(it, todayISO) {
+  if (!it.lastBought) return false;
+  const f = itemFrequency(it);
+  if (f === 'mensual') return it.lastBought.slice(0, 7) === todayISO.slice(0, 7);
+  if (f === 'semanal') return mondayOf(it.lastBought) === mondayOf(todayISO);
+  return false;
+}
 
 export function monthlyListBudget(env) {
   const items = (env.order && env.order.items) || [];
-  const fixed = items.filter(isFixedItem).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+  const r = (n) => Math.round(n * 100) / 100;
+  const sumOf = (f) => items.filter((it) => itemFrequency(it) === f).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+  const weekly = sumOf('semanal');
+  const monthly = sumOf('mensual');
   const occasional = Number(env.order && env.order.occasionalBudget) || 0;
-  return { fixed: Math.round(fixed * 100) / 100, occasional, total: Math.round((fixed + occasional) * 100) / 100 };
+  return { weekly: r(weekly), monthly: r(monthly), fixed: r(weekly + monthly), occasional, total: r(weekly + monthly + occasional) };
 }
 
 // Monto de un gasto en la moneda del sobre (los gastos se guardan en la moneda de ingresos).
@@ -238,16 +260,20 @@ function weeksInMonth(month) {
 
 // Cuánto se puede gastar en la semana de `dateISO` (en la moneda del sobre): lo que queda del presupuesto
 // del mes al empezar la semana, repartido entre las semanas que faltan, menos lo gastado esta semana.
+// En una lista fija, la semana reparte solo semanales y ocasionales: la compra mensual va aparte
+// (de cada compra registrada se descuenta la parte de productos mensuales, `order.monthlyPart`).
 export function weeklyAllowance(state, env, dateISO, budget = null) {
   const month = dateISO.slice(0, 7);
-  const total = budget ?? (isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0);
+  const list = isMonthlyList(env) ? monthlyListBudget(env) : null;
+  const total = budget ?? (list ? list.weekly + list.occasional : Number(env.monthly) || 0);
   const wk = weekIndex(dateISO);
   const weeks = weeksInMonth(month);
   let before = 0;
   let thisWeek = 0;
   for (const x of state.expenses) {
     if (x.envId !== env.id || monthKey(x.date) !== month) continue;
-    const amount = expenseInEnvCurrency(state, env, x);
+    let amount = expenseInEnvCurrency(state, env, x);
+    if (list && x.order && Number(x.order.total) > 0) amount *= 1 - Math.min(1, (Number(x.order.monthlyPart) || 0) / Number(x.order.total));
     if (weekIndex(x.date) < wk) before += amount; else if (weekIndex(x.date) === wk) thisWeek += amount;
   }
   const weeksLeft = weeks - wk;

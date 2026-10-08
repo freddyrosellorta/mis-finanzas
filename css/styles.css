@@ -496,5 +496,10 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .btn.link.food-name { font-weight: 600; color: var(--label); padding: 0; height: auto; text-align: left; }
 .btn.link.food-name:hover { color: var(--accent); }
 
+/* Listas de compra: grupos por frecuencia y productos comprados */
+.table tr.group-row td { background: none !important; padding-top: 14px; font-weight: 600; color: var(--label-2); font-size: 12px; }
+.table tr.bought input[data-field="name"] { color: var(--label-2); text-decoration: line-through; }
+.bought-tag { font-size: 11px; color: var(--text-green); display: flex; align-items: center; gap: 6px; }
+.bought-tag .btn.link { height: auto; font-size: 11px; }
 /* Listas de compra: nombre del producto legible */
 .table input[data-field="name"][data-order-item] { min-width: 300px; }
