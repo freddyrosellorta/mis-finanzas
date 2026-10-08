@@ -815,7 +815,7 @@ function viewPedido() {
           ${hasTimes ? `<td class="r num muted">${num(it.times) ? `${it.times}${it.timesPlus ? '+' : ''}` : '—'}</td>` : ''}
           ${o.monthly ? `<td><span class="popup" style="min-width:116px"><select class="input" aria-label="Tipo de ${esc(it.name)}" data-order-item="${i}" data-field="frequency" data-k="oi:${i}:o">${E.FREQUENCIES.map((f) => `<option value="${f}" ${E.itemFrequency(it) === f ? 'selected' : ''}>${FREQ_NAMES[f]}</option>`).join('')}</select></span></td>` : ''}
           <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
-          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" step="any" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q">${o.monthly ? `<div class="tiny muted">${FREQ_QTY[E.itemFrequency(it)]}</div>` : ''}</td>
+          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" step="any" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q"></td>
           <td class="r num ${it.selected ? '' : 'muted'}">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
           <td><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
