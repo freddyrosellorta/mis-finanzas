@@ -486,8 +486,13 @@ function viewMetas() {
   };
 
   return `<div class="page-head"><div><h1>Metas</h1><p>Ahorra antes de comprar: sin deudas ni intereses.</p></div></div>
-    ${ef ? `<section class="card stack">
-      <h2>Fondo de emergencia</h2>
+    ${ef && !E.emergencyEnabled(state) ? `<section class="card stack">
+      <div class="row between"><h2>Fondo de emergencia</h2><span class="badge">En pausa</span></div>
+      <p class="sub">No recibe dinero por ahora. Conserva su saldo de ${fmt(efBal)}. Actívalo cuando tus ingresos lo permitan, aunque sea con una meta más pequeña.</p>
+      <div><button class="btn primary" data-action="ef-toggle" data-v="1">Activar fondo de emergencia</button></div>
+    </section>` : ''}
+    ${ef && E.emergencyEnabled(state) ? `<section class="card stack">
+      <div class="row between"><h2>Fondo de emergencia</h2><button class="btn sm" data-action="ef-toggle" data-v="0">Pausar…</button></div>
       <p class="sub">Tu seguro contra meses flojos de clientes, enfermedades o imprevistos. Meta: ${state.settings.emergencyMonths} meses de necesidades (${fmt(needs)}/mes).</p>
       <div class="row between"><span class="num" style="font-size:1.5rem;font-weight:700">${fmt(efBal)}</span><span class="muted">de ${fmt(efTarget)}</span></div>
       ${meter(efTarget ? efBal / efTarget : 0, { color: 'var(--g-ahorro)' })}
@@ -981,11 +986,12 @@ function viewAjustes() {
         ${isDual() ? `<div class="field"><label for="fx">Tipo de cambio: 1 ${baseCode()} =</label><div class="money" data-sym="" data-code="${costCode()}"><input id="fx" class="input" type="number" inputmode="decimal" min="0.0001" step="0.01" value="${esc(s.fxRate)}" ${bind('settings.fxRate')}></div><span class="help">Cambiarlo no altera tus montos en ${costCode()}; solo su equivalente en ${baseCode()}.</span></div>` : ''}
         <div class="field"><label for="inc">Ingreso mensual promedio</label>${money(`id="inc" ${bind('settings.incomeEstimate')}`, s.incomeEstimate || '')}<span class="help">Se usa hasta que tengas 1 mes de historial. Sé conservador.</span></div>
         <div class="field"><label for="tax">Reserva para impuestos</label>${percent(`id="tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pregunta a un contador qué te corresponde como trabajador independiente.</span></div>
-        <div class="field"><label for="pf">Págate primero</label>${percent(`id="pf" ${bind('settings.payFirstPct')}`, s.payFirstPct)}<span class="help">Va al ahorro antes que cualquier gasto. 10% mínimo.</span></div>
+        <div class="field"><label for="pf">Págate primero</label>${percent(`id="pf" ${bind('settings.payFirstPct')}`, s.payFirstPct)}<span class="help">${E.emergencyEnabled(state) ? 'Va al ahorro antes que cualquier gasto. 10% mínimo.' : 'No se aplica mientras el fondo de emergencia está en pausa.'}</span></div>
       </div>
     </section>
     <section class="card stack">
       <h2>Fondo de emergencia</h2>
+      <label class="check switch-row"><span><strong>Fondo de emergencia activo</strong><span class="small ink-2" style="display:block">Si lo pausas no recibe aporte mensual, “págate primero” ni excedente; su saldo se conserva.</span></span><input type="checkbox" switch ${E.emergencyEnabled(state) ? 'checked' : ''} ${bind('settings.emergencyEnabled', 'bool')}></label>
       <div class="form-grid">
         <div class="field"><label for="efm">Meses de necesidades</label><input id="efm" class="input" type="number" min="1" max="24" value="${esc(s.emergencyMonths)}" ${bind('settings.emergencyMonths')}><span class="help">Con ingresos variables: 6.</span></div>
         <div class="field"><label for="efh">Completarlo en (meses)</label><input id="efh" class="input" type="number" min="1" max="60" value="${esc(s.emergencyHorizon)}" ${bind('settings.emergencyHorizon')}></div>
@@ -1607,6 +1613,13 @@ const ACTIONS = {
     delete it.lastBought;
     env.updatedAt = Date.now();
     commit(`“${it.name}” vuelve a estar pendiente`);
+  },
+  'ef-toggle': (el) => {
+    const on = el.dataset.v === '1';
+    if (!on && !confirm('¿Pausar el fondo de emergencia? Dejará de recibir dinero (aporte mensual, págate primero y excedente) hasta que lo actives. Su saldo se conserva.')) return;
+    state.settings.emergencyEnabled = on;
+    touch('settings');
+    commit(on ? 'Fondo de emergencia activado ✓' : 'Fondo de emergencia en pausa');
   },
   'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = envById(el.dataset.id)?.role === 'comida' ? 'comida' : 'pedido'; render(); window.scrollTo(0, 0); },
   'create-food-list': () => {

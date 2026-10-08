@@ -388,6 +388,9 @@ export function needsMonthly(state, month) {
     .reduce((s, e) => s + monthlyTarget(state, e, month), 0);
 }
 
+// El fondo de emergencia se puede pausar (p. ej. mientras los ingresos no cubren todo); su saldo se conserva.
+export const emergencyEnabled = (state) => state.settings.emergencyEnabled !== false;
+
 export function emergencyTarget(state, month) {
   return needsMonthly(state, month) * (Number(state.settings.emergencyMonths) || 6);
 }
@@ -396,6 +399,7 @@ export function emergencyTarget(state, month) {
 export function monthlyTarget(state, env, month) {
   if (env.role === 'impuestos') return 0;
   if (env.role === 'emergencia') {
+    if (!emergencyEnabled(state)) return 0;
     const remaining = emergencyTarget(state, month) - envelopeBalance(state, env.id, month);
     if (remaining <= 0) return 0;
     return Math.ceil(remaining / (Number(state.settings.emergencyHorizon) || 12));
@@ -460,7 +464,8 @@ export function allocate(state, amount, date) {
   const emergency = findRole(state, 'emergencia');
   const invest = findRole(state, 'inversion');
   const efFull = emergency && envelopeBalance(state, emergency.id) >= emergencyTarget(state, month);
-  give(efFull ? invest || emergency : emergency, Math.round(toCents(amount) * (Number(s.payFirstPct) || 0) / 100), 'primero');
+  // Con el fondo pausado no se aparta "págate primero": ese dinero se queda para los gastos del mes.
+  if (emergencyEnabled(state)) give(efFull ? invest || emergency : emergency, Math.round(toCents(amount) * (Number(s.payFirstPct) || 0) / 100), 'primero');
 
   // Lo que le falta a un sobre este mes (en centavos), contando lo que ya recibió en este reparto.
   const missingOf = (env) => Math.max(0, toCents(monthlyTarget(state, env, month)) - toCents(fundedInMonth(state, env.id, month)) - (alloc[env.id] || 0));
@@ -501,9 +506,13 @@ export function allocate(state, amount, date) {
     const efBalance = emergency ? envelopeBalance(state, emergency.id) + fromCents(alloc[emergency.id] || 0) : 0;
     const efMissing = Math.max(0, toCents(emergencyTarget(state, month) - efBalance));
     const efPart = Math.round(surplus * split.emergencia / 100);
-    const toEf = Math.min(efPart, efMissing);
-    give(emergency, toEf, 'excedente');
-    give(invest, efPart - toEf, 'excedente');
+    if (emergencyEnabled(state)) {
+      const toEf = Math.min(efPart, efMissing);
+      give(emergency, toEf, 'excedente');
+      give(invest, efPart - toEf, 'excedente');
+    } else {
+      give(findRole(state, 'libre') || invest, efPart, 'excedente'); // fondo pausado: esa parte queda libre
+    }
 
     const goals = state.envelopes
       .filter((e) => e.goal && Number(e.goal.target) > 0)
@@ -555,7 +564,9 @@ export function recommendations(state, month, fmt, today = new Date()) {
   }
 
   const ef = env('emergencia');
-  if (ef && needs > 0) {
+  if (ef && !emergencyEnabled(state)) {
+    add('info', 'Fondo de emergencia en pausa', 'No recibe dinero mientras tus ingresos cubren tus gastos. Cuando puedas, actívalo en Ajustes, aunque sea con una meta más pequeña (p. ej. 1 o 3 meses).');
+  } else if (ef && needs > 0) {
     const months = envelopeBalance(state, ef.id) / needs;
     const target = Number(s.emergencyMonths) || 6;
     const pf = Number(s.payFirstPct) || 0;
@@ -571,7 +582,7 @@ export function recommendations(state, month, fmt, today = new Date()) {
   else if (needsPct > 0.5) add('warning', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'Un poco por encima del 50% recomendado. Es manejable si mantienes el ahorro en 20% o más.', 'necesidades');
   else add('good', `Necesidades: ${Math.round(needsPct * 100)}% del ingreso`, 'Dentro del 50% recomendado por la regla 50/30/20.');
 
-  const savingsPct = ((plan.byGroup.ahorro || 0) + income * (Number(s.payFirstPct) || 0) / 100) / income;
+  const savingsPct = ((plan.byGroup.ahorro || 0) + (emergencyEnabled(state) ? income * (Number(s.payFirstPct) || 0) / 100 : 0)) / income;
   if (savingsPct < 0.2) add('warning', `Ahorro: ${Math.round(savingsPct * 100)}% del ingreso`, 'Apunta a ahorrar al menos 20% (fondo de emergencia, herramientas e inversión).', 'ahorro');
 
   const rent = state.envelopes.find((e) => e.role === 'renta');
@@ -601,7 +612,8 @@ export function recommendations(state, month, fmt, today = new Date()) {
   const top = Object.entries(byClient).sort((a, b) => b[1] - a[1])[0];
   if (top && total > 0 && top[1] / total > 0.5 && Object.keys(byClient).length >= 1 && recent.length >= 2) {
     const title = `${top[0]} es el ${Math.round(top[1] / total * 100)}% de tus ingresos`;
-    if ((Number(s.emergencyMonths) || 6) >= 8) add('info', title, `Ya reforzaste tu fondo de emergencia a ${s.emergencyMonths} meses. Conseguir más clientes es lo que reduce este riesgo.`);
+    if (!emergencyEnabled(state)) add('info', title, 'Depender de un solo cliente es riesgoso. Cuando actives el fondo de emergencia, considera una meta de 8 meses.');
+    else if ((Number(s.emergencyMonths) || 6) >= 8) add('info', title, `Ya reforzaste tu fondo de emergencia a ${s.emergencyMonths} meses. Conseguir más clientes es lo que reduce este riesgo.`);
     else add('warning', title, 'Depender de un solo cliente es riesgoso. Mientras diversificas, refuerza el fondo de emergencia.', 'cliente');
   }
 
