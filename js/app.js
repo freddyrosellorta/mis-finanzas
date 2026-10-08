@@ -691,14 +691,18 @@ function weeklyCard(env, compact = false) {
       <div class="row between" style="flex-wrap:wrap"><h2>${esc(env.icon)} ${esc(env.name)} · semana ${w.week} de ${w.weeks}</h2>${compact ? `<button class="btn link sm" data-action="go-list" data-id="${env.id}">Ver lista</button>` : ''}</div>
       <div><div class="small ink-2">${over ? 'Esta semana te pasaste por' : 'Esta semana puedes gastar'}</div><div class="num ${over ? 'warn-ink' : ''}" style="font-size:22px;line-height:28px;font-weight:700">${fmtIn(Math.abs(w.canSpend), cur)}</div></div>
       ${meter(w.forWeek ? w.spentWeek / w.forWeek : w.spentWeek ? 1 : 0, { color: over ? 'var(--red)' : 'var(--g-necesidad)' })}
-      <div class="tiny ink-2">Gastado esta semana ${fmtIn(w.spentWeek, cur)} de ${fmtIn(w.forWeek, cur)} · quedan ${fmtIn(w.leftMonth, cur)} del mes para ${w.weeksLeft} ${w.weeksLeft === 1 ? 'semana' : 'semanas'}${E.isMonthlyList(env) ? ' (semanales y ocasionales)' : ''}</div>
+      <div class="tiny ink-2">${E.isMonthlyList(env)
+        ? `Gastado esta semana ${fmtIn(w.spentWeek, cur)} de ${fmtIn(w.forWeek, cur)} (${fmtIn(w.perWeek, cur)} de semanales + ${fmtIn(w.forWeek - w.perWeek, cur)} de margen) · margen restante del mes ${fmtIn(w.occasionalLeft, cur)}`
+        : `Gastado esta semana ${fmtIn(w.spentWeek, cur)} de ${fmtIn(w.forWeek, cur)} · quedan ${fmtIn(w.leftMonth, cur)} del mes para ${w.weeksLeft} ${w.weeksLeft === 1 ? 'semana' : 'semanas'}`}</div>
       ${E.isMonthlyList(env) ? monthlyStatus(env, cur) : ''}
       <div class="row" style="flex-wrap:wrap"><button class="btn sm" data-action="open" data-modal="gasto" data-env="${env.id}">${sym('minus')} Gasto ocasional…</button>${compact ? pendingNote(env) : ''}</div>
     </section>`;
 }
 const weeklyCards = () => state.envelopes.filter(E.isMonthlyList).map((e) => weeklyCard(e, true)).join('');
 
-const FREQ_NAMES = { semanal: 'Semanal', mensual: 'Mensual', ocasional: 'Ocasional' };
+const FREQ_NAMES = { semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual', ocasional: 'Ocasional' };
+const FREQ_PERIOD = { semanal: 'esta semana', quincenal: 'esta quincena', mensual: 'este mes' };
+const FREQ_QTY = { semanal: 'por semana', quincenal: 'por quincena', mensual: 'por mes', ocasional: 'por compra' };
 
 // Filas de la lista; en una compra fija se agrupan por frecuencia con un encabezado por grupo.
 function orderRows(o, row) {
@@ -710,7 +714,8 @@ function orderRows(o, row) {
     const group = indexed.filter(({ it }) => E.itemFrequency(it) === f);
     if (!group.length) return '';
     const done = group.filter(({ it }) => E.isBought(it, today)).length;
-    const note = f === 'ocasional' ? '' : ` · ${done} de ${group.length} comprados ${f === 'semanal' ? 'esta semana' : 'este mes'}`;
+    const cost = group.reduce((s, { it }) => s + num(it.price) * num(it.qty), 0);
+    const note = f === 'ocasional' ? ' · los cubre el margen' : ` · ${fmtIn(cost, E.envCurrency(state, currentOrder()))} ${FREQ_QTY[f]} · ${done} de ${group.length} comprados ${FREQ_PERIOD[f]}`;
     return `<tr class="group-row"><td colspan="${cols}">${FREQ_NAMES[f]}es${note}</td></tr>${group.map(({ it, i }) => row(it, i)).join('')}`;
   }).join('');
 }
@@ -723,25 +728,26 @@ function boughtTag(it, i) {
   return `<div class="tiny muted">Última compra: ${when}</div>`;
 }
 
-// Estado de la compra mensual: comprada o cuánto falta.
+// Estado de las compras quincenal y mensual: hechas o cuánto falta.
 function monthlyStatus(env, cur) {
   const today = E.todayISO();
-  const items = env.order.items.filter((it) => E.itemFrequency(it) === 'mensual');
-  if (!items.length) return '';
-  const pending = items.filter((it) => !E.isBought(it, today));
-  if (!pending.length) return '<div class="small ok-ink">✓ Compra mensual hecha</div>';
-  const cost = pending.reduce((s, it) => s + num(it.price) * num(it.qty), 0);
-  return `<div class="small ink-2">Compra mensual pendiente: <strong>${fmtIn(cost, cur)}</strong> (${pending.length} ${pending.length === 1 ? 'producto' : 'productos'})</div>`;
+  return [['quincenal', 'de la quincena'], ['mensual', 'del mes']].map(([f, label]) => {
+    const items = env.order.items.filter((it) => E.itemFrequency(it) === f);
+    if (!items.length) return '';
+    const pending = items.filter((it) => !E.isBought(it, today));
+    if (!pending.length) return `<div class="small ok-ink">✓ Compra ${label} hecha</div>`;
+    const cost = pending.reduce((s, it) => s + num(it.price) * num(it.qty), 0);
+    return `<div class="small ink-2">Compra ${label} pendiente: <strong>${fmtIn(cost, cur)}</strong> (${pending.length} ${pending.length === 1 ? 'producto' : 'productos'})</div>`;
+  }).join('');
 }
 
 // Resumen de pendientes para la tarjeta de Inicio.
 function pendingNote(env) {
   const today = E.todayISO();
   const count = (f) => env.order.items.filter((it) => E.itemFrequency(it) === f && !E.isBought(it, today)).length;
-  const w = count('semanal');
-  const m = count('mensual');
-  if (!w && !m) return '<span class="small ink-2">Todo comprado ✓</span>';
-  return `<span class="small ink-2">Pendientes: ${[w ? `${w} semanales` : '', m ? `${m} mensuales` : ''].filter(Boolean).join(' · ')}</span>`;
+  const parts = [['semanal', 'semanales'], ['quincenal', 'quincenales'], ['mensual', 'mensuales']].map(([f, n]) => (count(f) ? `${count(f)} ${n}` : '')).filter(Boolean);
+  if (!parts.length) return '<span class="small ink-2">Todo comprado ✓</span>';
+  return `<span class="small ink-2">Pendientes: ${parts.join(' · ')}</span>`;
 }
 
 function viewPedido() {
@@ -780,9 +786,9 @@ function viewPedido() {
       ${o.monthly ? (() => {
         const b = E.monthlyListBudget(env);
         return `<div class="form-grid">
-          <div class="field"><span class="label">Semanales y mensuales al mes</span><div class="num" style="font-size:17px;font-weight:600;line-height:24px">${fmtIn(b.fixed, cur)}</div><span class="help">Precio × cantidad al mes de los productos semanales y mensuales.</span></div>
+          <div class="field"><span class="label">Compras fijas al mes</span><div class="num" style="font-size:17px;font-weight:600;line-height:24px">${fmtIn(b.fixed, cur)}</div><span class="help">Semanales ${fmtIn(b.perWeek, cur)} × ${Math.round(E.WEEKS_PER_MONTH * 100) / 100} semanas + quincenales ${fmtIn(b.perFortnight, cur)} × 2 + mensuales ${fmtIn(b.monthly, cur)}.</span></div>
           <div class="field"><label for="o-occ">Margen para ocasionales al mes</label>${money(`id="o-occ" data-order="occasionalBudget" data-k="o:occ"`, o.occasionalBudget || '', '', cur)}<span class="help">Para lo que surge: un antojo, algo que se acabó antes.</span></div>
-          <div class="field"><span class="label">Presupuesto del mes</span><div class="num" style="font-size:17px;font-weight:600;line-height:24px">${fmtIn(b.total, cur)}</div><span class="help">≈ ${fmtIn(b.total / 4.33, cur)} por semana.</span></div>
+          <div class="field"><span class="label">Presupuesto del mes</span><div class="num" style="font-size:17px;font-weight:600;line-height:24px">${fmtIn(b.total, cur)}</div><span class="help">Cada semana: ${fmtIn(b.perWeek, cur)} de semanales más tu parte del margen.</span></div>
         </div>`;
       })() : ''}
       <div class="form-grid">
@@ -802,19 +808,19 @@ function viewPedido() {
       <p class="sub">Marca lo que llevan en esta compra y ajusta las cantidades. Los precios se guardan para la siguiente.</p>
       ${hasTimes ? `<div class="row" style="flex-wrap:wrap"><span class="small">Quitar los comprados menos de</span><span class="popup" style="min-width:72px"><select class="input" aria-label="Veces" id="o-min">${[2, 3, 4, 5].map((n) => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></span><span class="small">veces</span><button class="btn sm" data-action="order-prune">Quitar…</button></div>` : ''}
       ${o.items.length ? `<div class="table-wrap"><table class="table">
-        <thead><tr><th></th><th>Producto</th>${hasTimes ? '<th class="r">Veces</th>' : ''}${o.monthly ? '<th>Tipo</th>' : ''}<th class="r">Precio (${cur})</th><th class="r">${o.monthly ? 'Cantidad al mes' : 'Cantidad'}</th><th class="r">Subtotal</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Producto</th>${hasTimes ? '<th class="r">Veces</th>' : ''}${o.monthly ? '<th>Tipo</th>' : ''}<th class="r">Precio (${cur})</th><th class="r" ${o.monthly ? 'title="Semanal: por semana · Quincenal: por quincena · Mensual: por mes"' : ''}>Cantidad</th><th class="r">Subtotal</th><th></th></tr></thead>
         <tbody>${orderRows(o, (it, i) => `<tr class="${o.monthly && E.isBought(it, E.todayISO()) ? 'bought' : ''}">
           <td class="check-cell"><input type="checkbox" ${it.selected ? 'checked' : ''} aria-label="Llevar ${esc(it.name)}" data-order-item="${i}" data-field="selected" data-k="oi:${i}:s"></td>
           <td><input class="input" value="${esc(it.name)}" aria-label="Nombre del producto" data-order-item="${i}" data-field="name" data-k="oi:${i}:n">${o.monthly ? boughtTag(it, i) : ''}</td>
           ${hasTimes ? `<td class="r num muted">${num(it.times) ? `${it.times}${it.timesPlus ? '+' : ''}` : '—'}</td>` : ''}
           ${o.monthly ? `<td><span class="popup" style="min-width:116px"><select class="input" aria-label="Tipo de ${esc(it.name)}" data-order-item="${i}" data-field="frequency" data-k="oi:${i}:o">${E.FREQUENCIES.map((f) => `<option value="${f}" ${E.itemFrequency(it) === f ? 'selected' : ''}>${FREQ_NAMES[f]}</option>`).join('')}</select></span></td>` : ''}
           <td class="r"><input class="input num" style="width:84px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)}" data-order-item="${i}" data-field="price" data-k="oi:${i}:p"></td>
-          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="numeric" min="0" step="1" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q">${o.monthly && E.itemFrequency(it) === 'semanal' && num(it.qty) ? `<div class="tiny muted">≈ ${Math.round((num(it.qty) / 4.33) * 10) / 10} por semana</div>` : ''}</td>
+          <td class="r"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" step="any" value="${esc(it.qty)}" aria-label="Cantidad de ${esc(it.name)}" data-order-item="${i}" data-field="qty" data-k="oi:${i}:q">${o.monthly ? `<div class="tiny muted">${FREQ_QTY[E.itemFrequency(it)]}</div>` : ''}</td>
           <td class="r num ${it.selected ? '' : 'muted'}">${num(it.price) ? fmtIn(num(it.price) * num(it.qty), cur) : '—'}</td>
           <td><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
       </table></div>
-      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
+      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
     </section>
 
     <section class="card stack">
@@ -1615,7 +1621,7 @@ const ACTIONS = {
     const v = el.dataset.v;
     const today = E.todayISO();
     for (const it of env.order.items) {
-      if (v === 'semanal' || v === 'mensual') it.selected = E.itemFrequency(it) === v && !E.isBought(it, today);
+      if (E.FREQUENCIES.includes(v)) it.selected = E.itemFrequency(it) === v && !E.isBought(it, today);
       else it.selected = v === '1';
     }
     env.updatedAt = Date.now();
@@ -1639,7 +1645,7 @@ const ACTIONS = {
       id: E.uid(), date: E.todayISO(), envId: env.id,
       amount: Math.round(E.envToBase(state, env, r.mine) * 100) / 100,
       note: `${env.name} (${r.units} productos)`,
-      order: { total: r.total, partner: r.partner, units: r.units, currency: cur, monthlyPart: env.order.monthly ? env.order.items.filter((it) => it.selected && num(it.qty) > 0 && E.itemFrequency(it) === 'mensual').reduce((s, it) => s + num(it.price) * num(it.qty), 0) : 0, items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
+      order: { total: r.total, partner: r.partner, units: r.units, currency: cur, ...(env.order.monthly ? E.orderParts(env) : {}), items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
     };
     if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
     state.expenses.push(expense);

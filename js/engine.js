@@ -208,7 +208,11 @@ export function envToBase(state, env, amount) {
 
 export const isMonthlyList = (env) => Boolean(env.order && env.order.monthly);
 // Frecuencia de un producto: semanal, mensual u ocasional (los antiguos "fijos" son mensuales).
-export const FREQUENCIES = ['semanal', 'mensual', 'ocasional'];
+// La cantidad de cada producto es por periodo: semanal = por semana, quincenal = por quincena,
+// mensual = por mes, ocasional = por compra (lo cubre el margen de ocasionales).
+export const FREQUENCIES = ['semanal', 'quincenal', 'mensual', 'ocasional'];
+export const WEEKS_PER_MONTH = 52 / 12;
+const lineCost = (it) => (Number(it.price) || 0) * (Number(it.qty) || 0);
 export const itemFrequency = (it) => (FREQUENCIES.includes(it.frequency) ? it.frequency : it.occasional ? 'ocasional' : 'mensual');
 export const isFixedItem = (it) => itemFrequency(it) !== 'ocasional';
 
@@ -225,17 +229,32 @@ export function isBought(it, todayISO) {
   const f = itemFrequency(it);
   if (f === 'mensual') return it.lastBought.slice(0, 7) === todayISO.slice(0, 7);
   if (f === 'semanal') return mondayOf(it.lastBought) === mondayOf(todayISO);
+  if (f === 'quincenal') {
+    const half = (iso) => `${iso.slice(0, 7)}-${Number(iso.slice(8, 10)) <= 15 ? 1 : 2}`;
+    return half(it.lastBought) === half(todayISO);
+  }
   return false;
 }
 
 export function monthlyListBudget(env) {
   const items = (env.order && env.order.items) || [];
   const r = (n) => Math.round(n * 100) / 100;
-  const sumOf = (f) => items.filter((it) => itemFrequency(it) === f).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
-  const weekly = sumOf('semanal');
+  const sumOf = (f) => items.filter((it) => itemFrequency(it) === f).reduce((s, it) => s + lineCost(it), 0);
+  const perWeek = sumOf('semanal');
+  const perFortnight = sumOf('quincenal');
+  const weekly = perWeek * WEEKS_PER_MONTH;           // equivalente al mes
+  const fortnightly = perFortnight * 2;
   const monthly = sumOf('mensual');
   const occasional = Number(env.order && env.order.occasionalBudget) || 0;
-  return { weekly: r(weekly), monthly: r(monthly), fixed: r(weekly + monthly), occasional, total: r(weekly + monthly + occasional) };
+  const fixed = weekly + fortnightly + monthly;
+  return { perWeek: r(perWeek), perFortnight: r(perFortnight), weekly: r(weekly), fortnightly: r(fortnightly), monthly: r(monthly), fixed: r(fixed), occasional, total: r(fixed + occasional) };
+}
+
+// Partes de una compra registrada desde la lista (en la moneda del sobre) para separar la semana de lo periódico.
+export function orderParts(env) {
+  const chosen = ((env.order && env.order.items) || []).filter((it) => it.selected && (Number(it.qty) || 0) > 0);
+  const part = (f) => Math.round(chosen.filter((it) => itemFrequency(it) === f).reduce((s, it) => s + lineCost(it), 0) * 100) / 100;
+  return { weeklyPart: part('semanal'), fortnightPart: part('quincenal'), monthlyPart: part('mensual') };
 }
 
 // Monto de un gasto en la moneda del sobre (los gastos se guardan en la moneda de ingresos).
@@ -264,22 +283,55 @@ function weeksInMonth(month) {
 // (de cada compra registrada se descuenta la parte de productos mensuales, `order.monthlyPart`).
 export function weeklyAllowance(state, env, dateISO, budget = null) {
   const month = dateISO.slice(0, 7);
-  const list = isMonthlyList(env) ? monthlyListBudget(env) : null;
-  const total = budget ?? (list ? list.weekly + list.occasional : Number(env.monthly) || 0);
+  const r = (n) => Math.round(n * 100) / 100;
+  if (isMonthlyList(env) && budget == null) return listWeek(state, env, dateISO);
+  const total = budget ?? (Number(env.monthly) || 0);
   const wk = weekIndex(dateISO);
   const weeks = weeksInMonth(month);
   let before = 0;
   let thisWeek = 0;
   for (const x of state.expenses) {
     if (x.envId !== env.id || monthKey(x.date) !== month) continue;
-    let amount = expenseInEnvCurrency(state, env, x);
-    if (list && x.order && Number(x.order.total) > 0) amount *= 1 - Math.min(1, (Number(x.order.monthlyPart) || 0) / Number(x.order.total));
+    const amount = expenseInEnvCurrency(state, env, x);
     if (weekIndex(x.date) < wk) before += amount; else if (weekIndex(x.date) === wk) thisWeek += amount;
   }
   const weeksLeft = weeks - wk;
   const forWeek = Math.max(0, (total - before) / weeksLeft);
-  const r = (n) => Math.round(n * 100) / 100;
   return { budget: total, week: wk + 1, weeks, weeksLeft, forWeek: r(forWeek), spentWeek: r(thisWeek), canSpend: r(forWeek - thisWeek), spentMonth: r(before + thisWeek), leftMonth: r(total - before - thisWeek) };
+}
+
+// Semana de una lista fija: el costo semanal exacto (cantidades por semana) más el margen de ocasionales
+// que queda, repartido entre las semanas restantes. Quincenales y mensuales se compran aparte.
+function listWeek(state, env, dateISO) {
+  const month = dateISO.slice(0, 7);
+  const b = monthlyListBudget(env);
+  const wk = weekIndex(dateISO);
+  const weeksLeft = weeksInMonth(month) - wk;
+  let occBefore = 0;
+  let weekSpent = 0;
+  let occSpent = 0;
+  for (const x of state.expenses) {
+    if (x.envId !== env.id || monthKey(x.date) !== month) continue;
+    const amount = expenseInEnvCurrency(state, env, x);
+    const o = x.order;
+    const total = o && Number(o.total) > 0 ? Number(o.total) : 0;
+    // Gasto sin detalle (ocasional rápido) o la parte de una compra que no era semanal ni periódica.
+    const periodic = total ? Math.min(1, ((Number(o.fortnightPart) || 0) + (Number(o.monthlyPart) || 0)) / total) : 0;
+    const weeklyShare = total ? Math.min(1 - periodic, (Number(o.weeklyPart) || 0) / total) : 0;
+    const occasional = amount * (1 - periodic - weeklyShare);
+    occSpent += occasional;
+    if (weekIndex(x.date) < wk) occBefore += occasional;
+    else if (weekIndex(x.date) === wk) weekSpent += occasional + amount * weeklyShare;
+  }
+  const r = (n) => Math.round(n * 100) / 100;
+  const occLeft = Math.max(0, b.occasional - occBefore);
+  const forWeek = b.perWeek + occLeft / weeksLeft;
+  return {
+    budget: b.total, week: wk + 1, weeks: weeksInMonth(month), weeksLeft,
+    perWeek: b.perWeek, occasionalLeft: r(Math.max(0, b.occasional - occSpent)),
+    forWeek: r(forWeek), spentWeek: r(weekSpent), canSpend: r(forWeek - weekSpent),
+    leftMonth: r(b.perWeek * weeksLeft + occLeft - weekSpent),
+  };
 }
 
 export function orderSummary(env) {
