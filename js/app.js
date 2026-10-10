@@ -428,6 +428,11 @@ function viewInicio() {
     </section>`;
 }
 
+// Los sobres de gastos en otra moneda (p. ej. MXN) se muestran en su moneda, con el equivalente en USD.
+const localCur = (e) => isDual() && !envIsBase(e) && E.isManualEnvelope(e);
+const inEnv = (e, usd) => (localCur(e) ? E.baseToCost(state, usd) : usd);
+const fmtLocal = (e, usd) => (localCur(e) ? fmtEnv(e, E.baseToCost(state, usd)) : fmt(usd));
+
 function envRow(e, m) {
   const bal = E.envelopeBalance(state, e.id);
   const target = E.monthlyTarget(state, e, m);
@@ -439,7 +444,7 @@ function envRow(e, m) {
   } else if (e.role === 'impuestos') {
     detail = `<span class="tiny"><span>${state.settings.taxPct}% de cada pago</span><span>Este mes ${fmt(funded)}</span></span>`;
   } else if (target > 0) {
-    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmt(funded)} de ${fmt(target)}${isDual() && E.isManualEnvelope(e) && num(e.monthly) && !envIsBase(e) ? ` · ${fmtEnv(e, e.monthly)}` : ''}</span><span>${funded >= target ? '✓ cubierto' : `faltan ${fmt(target - funded)}`}</span></span>`;
+    detail = `${meter(funded / target, { thin: true, color: `var(--g-${e.group})` })}<span class="tiny"><span>Este mes ${fmtLocal(e, funded)} de ${fmtLocal(e, target)}</span><span>${funded >= target - 0.005 ? '✓ cubierto' : `faltan ${fmtLocal(e, target - funded)}`}</span></span>`;
   } else {
     detail = `<span class="tiny"><span>${e.role === 'libre' ? 'Recibe parte del excedente' : e.role === 'inversion' ? 'Recibe el excedente cuando el fondo está completo' : 'Sin monto mensual'}</span><span></span></span>`;
   }
@@ -447,7 +452,7 @@ function envRow(e, m) {
   return `<button class="env" data-action="open" data-modal="sobre" data-id="${e.id}">
     <span class="emoji" aria-hidden="true">${esc(e.icon)}</span>
     <span class="name">${esc(e.name)}${badges}</span>
-    <span class="bal num ${bal < 0 ? 'neg' : ''}">${fmt(bal)}</span>
+    <span class="bal num ${bal < 0 ? 'neg' : ''}">${fmtLocal(e, bal)}${localCur(e) ? `<span class="tiny muted" style="display:block;font-weight:400">${fmt(bal)}</span>` : ''}</span>
     <span class="detail">${detail}</span>
   </button>`;
 }
@@ -1274,6 +1279,8 @@ function paymentPreview() {
       ${Object.entries(stages[k]).map(([id, v]) => { const e = envById(id); return `<div class="step-line"><span class="l"><i class="dot" style="background:var(--g-${e.group})"></i>${esc(e.icon)} ${esc(e.name)}</span><span class="num"><strong>${fmt(v)}</strong></span></div>`; }).join('')}`).join('')}`;
 }
 
+const moveEquiv = (d) => (num(d.amount) && d.currency !== baseCode() ? `= ${fmt(E.toBase(state, num(d.amount), d.currency))}` : '');
+
 function envOptions(selected, { exclude } = {}) {
   return GROUP_ORDER.map((g) => `<optgroup label="${E.GROUPS[g].label}">${state.envelopes.filter((e) => e.group === g && e.id !== exclude).map((e) => `<option value="${e.id}" ${e.id === selected ? 'selected' : ''}>${esc(e.icon)} ${esc(e.name)} — ${fmt(E.envelopeBalance(state, e.id))}</option>`).join('')}</optgroup>`).join('');
 }
@@ -1310,7 +1317,9 @@ function modalHTML() {
     case 'mover':
       return `${head('Mover dinero entre sobres')}
         <p class="small ink-2">Útil cuando un sobre se queda corto. Sacar del fondo de emergencia debería ser solo para emergencias reales.</p>
-        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount')}</div>
+        <div class="field"><label for="d-amount">Monto</label>${money('id="d-amount" data-draft="amount"', d.amount, 'amount', d.currency)}
+          ${isDual() ? `<div class="segmented" role="radiogroup" aria-label="Moneda" style="margin-top:8px">${[costCode(), baseCode()].map((c) => `<label><input type="radio" name="mv-cur" value="${c}" ${c === d.currency ? 'checked' : ''} data-draft="currency"><span>${c}</span></label>`).join('')}</div>
+          <span class="help" id="mv-equiv">${moveEquiv(d)}</span>` : ''}</div>
         <div class="field"><label for="d-from">Desde</label><span class="popup"><select id="d-from" class="input" data-draft="from">${envOptions(d.from)}</select></span></div>
         <div class="field"><label for="d-to">Hacia</label><span class="popup"><select id="d-to" class="input" data-draft="to">${envOptions(d.to)}</select></span></div>
         ${foot('Mover', 'save-mover')}`;
@@ -1454,9 +1463,10 @@ function openModal(name, data = {}) {
   const base = { date: E.todayISO(), amount: '', note: '', client: '' };
   if (name === 'gasto') base.envId = data.env || 'comida';
   if (name === 'mover') {
+    base.currency = isDual() ? costCode() : baseCode();
     base.from = data.from || 'libre';
     base.to = data.to || state.envelopes.find((e) => e.id !== base.from)?.id;
-    if (data.amount) base.amount = data.amount;
+    if (data.amount) base.amount = isDual() ? Math.round(E.baseToCost(state, data.amount) * 100) / 100 : data.amount;
   }
   if (name === 'saldo') base.envId = 'emergencia';
   if (name === 'pago' || name === 'saldo') Object.assign(base, { currency: baseCode(), rate: E.fxRate(state) === 1 ? state.settings.fxRate : E.fxRate(state) });
@@ -1669,6 +1679,11 @@ document.addEventListener('change', (ev) => {
     ui.draft.priceUnit = el.value;
     renderModal();
   } else if (el.dataset.draft === 'currency') {
+    // Al cambiar de moneda en Mover dinero se convierte el monto escrito.
+    if (ui.modal === 'mover' && num(ui.draft.amount)) {
+      const usd = E.toBase(state, num(ui.draft.amount), ui.draft.currency);
+      ui.draft.amount = el.value === baseCode() ? usd : Math.round(E.baseToCost(state, usd) * 100) / 100;
+    }
     ui.draft.currency = el.value;
     renderModal();
   } else if (el.dataset.draft && ui.modal === 'gasto' && el.dataset.draft === 'envId') {
@@ -1723,12 +1738,14 @@ const ACTIONS = {
     closeModal(); commit('Gasto guardado ✓');
   },
   'save-mover': () => {
-    const d = ui.draft; const amount = num(d.amount);
-    if (amount <= 0 || d.from === d.to) return toast('Elige un monto y dos sobres distintos');
+    const d = ui.draft;
+    if (num(d.amount) <= 0 || d.from === d.to) return toast('Elige un monto y dos sobres distintos');
+    const amount = E.toBase(state, num(d.amount), d.currency || baseCode());
     const from = envById(d.from); const to = envById(d.to);
     const pair = E.uid();
-    state.expenses.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, envId: d.from, amount, note: `Movido a ${to.name}` });
-    state.payments.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, amount, client: '', note: `Desde ${from.name}`, alloc: { [d.to]: amount } });
+    const original = d.currency && d.currency !== baseCode() ? { amount: num(d.amount), currency: d.currency, rate: E.fxRate(state) } : undefined;
+    state.expenses.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, envId: d.from, amount, note: `Movido a ${to.name}`, original });
+    state.payments.push({ id: E.uid(), pair, kind: 'transfer', date: d.date, amount, client: '', note: `Desde ${from.name}`, alloc: { [d.to]: amount }, original });
     closeModal(); commit('Dinero movido ✓');
   },
   'save-saldo': () => {

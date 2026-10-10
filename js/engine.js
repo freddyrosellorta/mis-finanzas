@@ -65,12 +65,16 @@ export function fundedInMonth(state, envId, month) {
     if (p.kind === 'saldo' || monthKey(p.date) !== month) continue;
     cents += toCents(p.alloc[envId] || 0);
   }
-  return fromCents(cents);
+  // Lo que se movió a otro sobre ya no cuenta como recibido por este.
+  for (const x of state.expenses) {
+    if (x.kind === 'transfer' && x.envId === envId && monthKey(x.date) === month) cents -= toCents(x.amount);
+  }
+  return fromCents(Math.max(0, cents));
 }
 
 export function spentInMonth(state, envId, month) {
   return fromCents(state.expenses
-    .filter((e) => e.envId === envId && monthKey(e.date) === month)
+    .filter((e) => e.envId === envId && e.kind !== 'transfer' && monthKey(e.date) === month)
     .reduce((s, e) => s + toCents(e.amount), 0));
 }
 
@@ -340,7 +344,7 @@ export function weeklyAllowance(state, env, dateISO, budget = null) {
   let before = 0;
   let thisWeek = 0;
   for (const x of state.expenses) {
-    if (x.envId !== env.id || monthKey(x.date) !== month) continue;
+    if (x.envId !== env.id || x.kind === 'transfer' || monthKey(x.date) !== month) continue;
     const amount = expenseInEnvCurrency(state, env, x);
     if (weekIndex(x.date) < wk) before += amount; else if (weekIndex(x.date) === wk) thisWeek += amount;
   }
@@ -360,7 +364,7 @@ function listWeek(state, env, dateISO) {
   let weekSpent = 0;
   let occSpent = 0;
   for (const x of state.expenses) {
-    if (x.envId !== env.id || monthKey(x.date) !== month) continue;
+    if (x.envId !== env.id || x.kind === 'transfer' || monthKey(x.date) !== month) continue;
     const amount = expenseInEnvCurrency(state, env, x);
     const o = x.order;
     const total = o && Number(o.total) > 0 ? Number(o.total) : 0;
