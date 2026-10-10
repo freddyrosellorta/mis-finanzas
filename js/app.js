@@ -815,13 +815,22 @@ function orderRows(o, row) {
 // Barra fija al inicio de los productos: lo marcado contra el dinero disponible ahora en el sobre.
 function selectionBar(env, r, cur) {
   if (!r.items && !r.missingPrices) return '';
-  const available = E.envToBase(state, env, 1) ? E.envelopeBalance(state, env.id) / E.envToBase(state, env, 1) : 0; // en la moneda del sobre
+  // Con fondo compartido, Alimentación dispone de todo y las listas enlazadas de lo que sobre de ella.
+  const pool = E.sharedFoodPool(state);
+  const shared = pool && env.id in pool.available;
+  const available = shared ? pool.available[env.id] : E.balanceInEnv(state, env); // en la moneda del sobre
+  const food = shared ? envById(pool.food) : null;
+  const note = !shared ? ''
+    : env.id === pool.food
+      ? (pool.pool - pool.own[env.id] > 0.005 ? `Incluye ${fmtIn(pool.pool - pool.own[env.id], cur)} de ${pool.linked.map((id) => esc(envById(id).name)).join(', ')}; Alimentación tiene prioridad.` : '')
+      : `Parte de lo que sobra de ${esc(food.name)} (${fmtIn(pool.available[env.id] - pool.own[env.id], cur)}) más ${fmtIn(pool.own[env.id], cur)} de este sobre.`;
   const left = Math.round((available - r.mine) * 100) / 100;
   const over = left < -0.005;
   return `<div class="selection-bar ${over ? 'over' : 'ok'}" role="status">
       <div><span class="k">Marcados (${r.items})</span><strong class="num">${fmtIn(r.mine, cur)}</strong>${r.partner ? `<span class="tiny muted"> tu parte</span>` : ''}</div>
       <div><span class="k">Disponible</span><strong class="num">${fmtIn(available, cur)}</strong></div>
       <div><span class="k">${over ? 'Te excedes' : 'Te quedan'}</span><strong class="num">${fmtIn(Math.abs(left), cur)}</strong></div>
+      ${note ? `<div class="tiny muted" style="grid-column:1/-1">${note}</div>` : ''}
       ${r.missingPrices ? `<div class="tiny muted" style="grid-column:1/-1">${r.missingPrices} marcado${r.missingPrices === 1 ? '' : 's'} sin precio no se suma${r.missingPrices === 1 ? '' : 'n'}.</div>` : ''}
     </div>`;
 }
@@ -889,6 +898,7 @@ function viewPedido(embedded = null) {
 
     <section class="card stack">
       <h2>Presupuesto</h2>
+      ${env.role !== 'comida' && foodEnvelope()?.order && E.envCurrency(state, foodEnvelope()) === cur ? `<label class="check switch-row"><span><strong>Usar lo que sobre de Alimentación</strong><span class="small ink-2" style="display:block">Esta lista parte de lo que queda en Alimentación después de lo marcado allí. Alimentación siempre tiene prioridad.</span></span><input type="checkbox" switch ${E.sharesWithFood(env) ? 'checked' : ''} data-order="sharesWithFood" data-k="o:share"></label>` : ''}
       <label class="check switch-row"><span><strong>Compra fija mensual</strong><span class="small ink-2" style="display:block">Los mismos productos cada mes (cantidades para un mes) más un margen para compras ocasionales.</span></span><input type="checkbox" switch ${o.monthly ? 'checked' : ''} data-order="monthly" data-k="o:monthly"></label>
       ${o.monthly ? (() => {
         const b = E.monthlyListBudget(env);
@@ -1641,7 +1651,7 @@ document.addEventListener('change', (ev) => {
     if (!env) return;
     if (el.dataset.order) {
       const k = el.dataset.order;
-      env.order[k] = k === 'store' ? el.value : k === 'monthly' ? el.checked : num(el.value);
+      env.order[k] = k === 'store' ? el.value : k === 'monthly' || k === 'sharesWithFood' ? el.checked : num(el.value);
       // Al activar la compra fija, los productos existentes empiezan como fijos.
       if (k === 'monthly' && el.checked) for (const it of env.order.items) if (!it.frequency) it.frequency = E.itemFrequency(it);
     } else {
@@ -1926,7 +1936,10 @@ const ACTIONS = {
     const r = E.orderSummary(env);
     if (!r.total) return;
     const cur = E.envCurrency(state, env);
-    if (!confirm(`¿Registrar la compra de ${fmtIn(r.total, cur)}? Se anotará ${r.partner ? `tu parte (${fmtIn(r.mine, cur)})` : 'ese monto'} como gasto del sobre “${env.name}”.`)) return;
+    const pool = E.sharedFoodPool(state);
+    const availableNow = pool && env.id in pool.available ? pool.available[env.id] : E.balanceInEnv(state, env);
+    const exceed = Math.round((r.mine - availableNow) * 100) / 100;
+    if (!confirm(`¿Registrar la compra de ${fmtIn(r.total, cur)}? Se anotará ${r.partner ? `tu parte (${fmtIn(r.mine, cur)})` : 'ese monto'} como gasto del sobre “${env.name}”.${exceed > 0.005 ? `\n\nOjo: excede lo disponible por ${fmtIn(exceed, cur)}; el sobre quedará en negativo hasta el próximo ingreso.` : ''}`)) return;
     const expense = {
       id: E.uid(), date: E.todayISO(), envId: env.id,
       amount: Math.round(E.envToBase(state, env, r.mine) * 100) / 100,
@@ -1934,11 +1947,22 @@ const ACTIONS = {
       order: { total: r.total, partner: r.partner, units: r.units, currency: cur, ...(env.order.monthly ? E.orderParts(env) : {}), items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
     };
     if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
+    // Fondo compartido: si este sobre no alcanza, se trae lo necesario del otro (respetando la prioridad de Alimentación).
+    const moved = [];
+    for (const t of E.poolTransfers(state, env.id, r.mine)) {
+      const from = envById(t.from);
+      const usd = Math.floor(E.envToBase(state, env, t.amount) * 100) / 100; // hacia abajo: el origen nunca queda en negativo por centavos
+      const pair = E.uid();
+      const original = isDual() && !envIsBase(env) ? { amount: t.amount, currency: cur, rate: E.fxRate(state) } : undefined;
+      state.expenses.push({ id: E.uid(), pair, kind: 'transfer', date: expense.date, envId: from.id, amount: usd, note: `Movido a ${env.name}`, original });
+      state.payments.push({ id: E.uid(), pair, kind: 'transfer', date: expense.date, amount: usd, client: '', note: `Desde ${from.name}`, alloc: { [env.id]: usd }, original });
+      moved.push(`${fmtIn(t.amount, cur)} de ${from.name}`);
+    }
     state.expenses.push(expense);
     // Los productos comprados quedan como "Comprado" y se desmarcan para la siguiente compra.
     for (const it of env.order.items) if (it.selected && num(it.qty) > 0) { it.lastBought = expense.date; it.selected = false; }
     env.updatedAt = Date.now();
-    commit('Compra registrada ✓');
+    commit(moved.length ? `Compra registrada ✓ · se usaron ${moved.join(' y ')}` : 'Compra registrada ✓');
   },
   resolve: (el) => {
     const id = el.dataset.rec;

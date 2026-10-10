@@ -387,6 +387,56 @@ function listWeek(state, env, dateISO) {
   };
 }
 
+// ---------- Fondo compartido con Alimentación ----------
+// Alimentación y las listas enlazadas (misma moneda; por defecto "Súper y gastos del hogar") comparten el dinero.
+// Alimentación tiene prioridad: puede usar todo el fondo. Cada lista enlazada parte de lo que sobra después
+// de lo marcado en Alimentación (y en las listas anteriores).
+
+export const sharesWithFood = (env) => Boolean(env.order) && env.role !== 'comida' && (env.order.sharesWithFood ?? env.id === 'hogar');
+
+// Saldo de un sobre en su propia moneda.
+export function balanceInEnv(state, env) {
+  const usdPerUnit = envToBase(state, env, 1);
+  return usdPerUnit ? envelopeBalance(state, env.id) / usdPerUnit : 0;
+}
+
+export function sharedFoodPool(state) {
+  const food = state.envelopes.find((e) => e.role === 'comida' && e.order);
+  if (!food) return null;
+  const cur = envCurrency(state, food);
+  const linked = state.envelopes.filter((e) => sharesWithFood(e) && envCurrency(state, e) === cur);
+  if (!linked.length) return null;
+  const r = (n) => Math.round(n * 100) / 100;
+  const own = Object.fromEntries([food, ...linked].map((e) => [e.id, r(balanceInEnv(state, e))]));
+  const pool = r(Object.values(own).reduce((a, b) => a + b, 0));
+  // Alimentación no hereda los faltantes de las listas enlazadas (solo sus saldos positivos).
+  const available = { [food.id]: r(own[food.id] + linked.reduce((s, e) => s + Math.max(0, own[e.id]), 0)) };
+  let rest = pool - orderSummary(food).mine;
+  const fromFood = r(Math.max(0, own[food.id] - orderSummary(food).mine));
+  for (const e of linked) { available[e.id] = r(rest); rest -= orderSummary(e).mine; }
+  return { food: food.id, linked: linked.map((e) => e.id), own, pool, available, fromFood };
+}
+
+// Cuánto hay que traer de otros sobres del fondo para pagar `amount` desde `envId`, respetando la prioridad
+// de Alimentación (a una lista enlazada solo se le da lo que sobra de lo marcado en Alimentación).
+export function poolTransfers(state, envId, amount) {
+  const p = sharedFoodPool(state);
+  if (!p || !(envId in p.available)) return [];
+  let missing = Math.round((amount - p.own[envId]) * 100) / 100;
+  if (missing <= 0.005) return [];
+  const out = [];
+  const sources = envId === p.food ? p.linked : [p.food, ...p.linked.filter((id) => id !== envId)];
+  for (const id of sources) {
+    const env = state.envelopes.find((e) => e.id === id);
+    const reserved = id === p.food ? orderSummary(env).mine : 0;
+    const can = Math.max(0, p.own[id] - reserved);
+    const take = Math.min(can, missing);
+    if (take > 0.005) { out.push({ from: id, amount: Math.round(take * 100) / 100 }); missing -= take; }
+    if (missing <= 0.005) break;
+  }
+  return out;
+}
+
 export function orderSummary(env) {
   const order = env.order || { items: [], shipping: 0 };
   const chosen = (order.items || []).filter((it) => it.selected && Number(it.qty) > 0);
