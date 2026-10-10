@@ -238,6 +238,9 @@ function scheduleSync(delay = 2000) {
 
 async function runSync() {
   if (!syncState.config) return;
+  // Sin conexión no se intenta: los cambios quedan guardados en el dispositivo y se suben al volver.
+  if (!navigator.onLine) { syncState.offline = true; refreshSyncStatus(); return; }
+  syncState.offline = false;
   if (syncState.busy) { syncState.again = true; return; }
   syncState.busy = true;
   refreshSyncStatus();
@@ -261,6 +264,7 @@ async function runSync() {
     if (!result.waiting) syncState.last = result.at;
     syncState.error = '';
   } catch (err) {
+    if (!navigator.onLine) { syncState.offline = true; return; }
     const message = err?.message || String(err);
     if (message !== syncState.error) toast(`Sincronización: ${message}`);
     syncState.error = message;
@@ -274,6 +278,7 @@ async function runSync() {
 function syncStatusText() {
   if (!syncState.config) return 'Desactivada';
   if (syncState.busy) return 'Sincronizando…';
+  if (syncState.offline) return 'Sin conexión: se sincronizará al volver';
   if (syncState.error) return `Error: ${syncState.error}`;
   if (syncState.waiting) return 'Conectado; esperando datos de algún dispositivo';
   if (syncState.last) return `Sincronizado a las ${new Date(syncState.last).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`;
@@ -606,7 +611,9 @@ function viewComida() {
     .map((i) => ({ name: i.name, cost: (num(i.price) / num(i.priceGrams || 1000)) * 100 / i.protein * 100 }))
     .sort((a, b) => a.cost - b.cost).slice(0, 3);
 
-  return `<div class="page-head"><div><h1>Alimentación</h1><p>Tu plan diario de nutrición convertido en presupuesto de súper.</p></div></div>
+  return `<div class="page-head"><div><h1>Alimentación</h1><p>Tu compra de comida y tu plan de Pulso.</p></div></div>
+    ${foodTabs()}
+    ${ui.foodTab === 'menu' ? `
     <section class="card stack">
       <h2>Metas diarias de nutrición</h2>
       <p class="sub">${fromMeals ? 'Suma de todas las comidas de tu menú (por persona). Ajusta las porciones hasta que todo quede en ✓.' : 'Ajusta los gramos de cada alimento hasta que todo quede en ✓.'} Las metas se pueden editar.</p>
@@ -660,7 +667,7 @@ function viewComida() {
       </table></div>
       <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
     </section>` : ''}
-    ${foodListSection()}`;
+    ` : foodListSection()}`;
 }
 
 // ---------- Menú por comidas ----------
@@ -719,6 +726,14 @@ function mealPlanner() {
     </section>` : ''}`;
 }
 
+// Pestañas de Alimentación: Compras (la lista, lo de todos los días) y Menú (comidas y metas de Pulso).
+function foodTabs() {
+  const tab = ui.foodTab === 'menu' ? 'menu' : 'compras';
+  return `<div class="segmented food-tabs" role="tablist" aria-label="Alimentación">
+      ${[['compras', 'Compras'], ['menu', 'Menú y nutrición']].map(([v, l]) => `<label><input type="radio" name="food-tab" value="${v}" ${tab === v ? 'checked' : ''} data-food-tab><span>${l}</span></label>`).join('')}
+    </div>`;
+}
+
 // Lista de compras de alimentación (las mismas funciones que Listas de compra).
 function foodListSection() {
   const env = foodEnvelope();
@@ -730,8 +745,7 @@ function foodListSection() {
       <div><button class="btn primary" data-action="create-food-list">${sym('plus')} Crear lista de alimentación</button></div>
     </section>`;
   }
-  return `<div class="page-head" style="margin-top:12px"><div><h1 style="font-size:22px;line-height:26px">Compras de alimentación</h1><p>${esc(env.icon)} ${esc(env.name)}${env.order.store ? ` · ${esc(env.order.store)}` : ''}</p></div></div>
-    ${viewPedido(env)}`;
+  return viewPedido(env);
 }
 
 // Cómo se vende cada alimento: por kg o litro (precio de 1000 g/ml), por pieza (con su peso) o por paquete (con su contenido).
@@ -814,7 +828,6 @@ function orderRows(o, row) {
 
 // Barra fija al inicio de los productos: lo marcado contra el dinero disponible ahora en el sobre.
 function selectionBar(env, r, cur) {
-  if (!r.items && !r.missingPrices) return '';
   // Con fondo compartido, Alimentación dispone de todo y las listas enlazadas de lo que sobre de ella.
   const pool = E.sharedFoodPool(state);
   const shared = pool && env.id in pool.available;
@@ -870,7 +883,7 @@ function viewPedido(embedded = null) {
   const env = embedded || currentOrder();
   const lists = orderLists();
   const switcher = `<div class="row" style="flex-wrap:wrap">
-      ${lists.length > 1 ? `<div class="segmented" role="radiogroup" aria-label="Lista">${lists.map((l) => `<label><input type="radio" name="olist" value="${l.id}" ${l.id === env?.id ? 'checked' : ''} data-order-list><span>${esc(l.icon)} ${esc(l.name)}</span></label>`).join('')}</div>` : ''}
+      ${lists.length > 1 ? `<span class="popup list-picker"><select class="input" aria-label="Lista" data-order-list>${lists.map((l) => `<option value="${l.id}" ${l.id === env?.id ? 'selected' : ''}>${esc(l.icon)} ${esc(l.name)}</option>`).join('')}</select></span>` : ''}
       <button class="btn sm" data-action="open" data-modal="nueva-lista">${sym('plus')} Nueva lista…</button>
     </div>`;
   if (!env) {
@@ -895,9 +908,10 @@ function viewPedido(embedded = null) {
 
   return `${embedded ? '' : `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
     ${switcher}`}
+    ${selectionBar(env, r, cur)}
 
-    <section class="card stack">
-      <h2>Presupuesto</h2>
+    <details class="card stack budget" ${innerWidth > 640 ? 'open' : ''}>
+      <summary><h2>Presupuesto</h2><span class="small ink-2">${fmtIn(o.monthly ? E.monthlyListBudget(env).total : num(env.monthly), cur)} al mes</span></summary>
       ${env.role !== 'comida' && foodEnvelope()?.order && E.envCurrency(state, foodEnvelope()) === cur ? `<label class="check switch-row"><span><strong>Usar lo que sobre de Alimentación</strong><span class="small ink-2" style="display:block">Esta lista parte de lo que queda en Alimentación después de lo marcado allí. Alimentación siempre tiene prioridad.</span></span><input type="checkbox" switch ${E.sharesWithFood(env) ? 'checked' : ''} data-order="sharesWithFood" data-k="o:share"></label>` : ''}
       <label class="check switch-row"><span><strong>Compra fija mensual</strong><span class="small ink-2" style="display:block">Los mismos productos cada mes (cantidades para un mes) más un margen para compras ocasionales.</span></span><input type="checkbox" switch ${o.monthly ? 'checked' : ''} data-order="monthly" data-k="o:monthly"></label>
       ${o.monthly ? (() => {
@@ -917,12 +931,11 @@ function viewPedido(embedded = null) {
         <div class="stat"><div class="k">Tu parte al mes</div><div class="v">${fmt(E.monthlyTarget(state, env, m))}</div></div>
         <div class="stat"><div class="k">Disponible en el sobre</div><div class="v">${fmt(E.envelopeBalance(state, env.id))}</div></div>
       </div>
-    </section>
+    </details>
     ${o.monthly ? weeklyCard(env) : ''}
 
     <section class="card stack">
       <div class="row between"><h2>Productos habituales</h2><button class="btn sm" data-action="open" data-modal="producto">${sym('plus')} Agregar producto…</button></div>
-      ${selectionBar(env, r, cur)}
       <p class="sub">Marca lo que llevan en esta compra y ajusta las cantidades. Los precios se guardan para la siguiente.</p>
       ${hasTimes ? `<div class="row" style="flex-wrap:wrap"><span class="small">Quitar los comprados menos de</span><span class="popup" style="min-width:72px"><select class="input" aria-label="Veces" id="o-min">${[2, 3, 4, 5].map((n) => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></span><span class="small">veces</span><button class="btn sm" data-action="order-prune">Quitar…</button></div>` : ''}
       ${o.items.length ? `<div class="table-wrap"><table class="table card-table list-table">
@@ -1682,6 +1695,10 @@ document.addEventListener('change', (ev) => {
   } else if (el.id === 'import-file' && el.files[0]) {
     importBackup(el.files[0]);
     el.value = '';
+  } else if (el.matches('[data-food-tab]')) {
+    ui.foodTab = el.value;
+    render();
+    window.scrollTo(0, 0);
   } else if (el.matches('[data-order-list]')) {
     ui.orderId = el.value;
     render();
@@ -2165,7 +2182,22 @@ render();
 // Sincroniza al abrir, al volver a la app, al recuperar la conexión y cada minuto mientras está visible.
 if (syncState.config) runSync();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(300); });
-window.addEventListener('online', () => scheduleSync(300));
+window.addEventListener('online', () => { updateOffline(); scheduleSync(300); });
+window.addEventListener('offline', updateOffline);
+
+// Aviso discreto de "Sin conexión": la app sigue funcionando con los datos guardados en el dispositivo.
+function updateOffline() {
+  let el = document.getElementById('offline');
+  if (navigator.onLine) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'offline';
+    el.setAttribute('role', 'status');
+    el.textContent = 'Sin conexión · tus cambios se guardan en este dispositivo y se sincronizan al volver';
+    document.body.appendChild(el);
+  }
+}
+updateOffline();
 setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 60000);
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
