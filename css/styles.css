@@ -516,7 +516,23 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   .portion-name { grid-column: 1; }
   .portion-del { grid-column: 2; grid-row: 1; }
   .portion-amount { grid-column: 1 / 3; }
-  .portion-amount .input { flex: 1; width: auto; }
+  .portion-amount .input { flex: 1; width: auto; min-width: 0; }
+  .portion-amount .popup { min-width: 0 !important; flex: 0 0 96px; }
+
+  /* Plan: monto, moneda y equivalente se acomodan en varias líneas */
+  .env-edit .row { flex-wrap: wrap; }
+  @media (max-width: 360px) { .card-table td.c-sub { font-size: 15px; } }
+  .env-edit .small.muted { white-space: normal !important; }
+
+  /* ¿Compras lo que comes? como tarjetas */
+  .check-table, .check-table tbody { display: block; width: 100%; }
+  .check-table thead { display: none; }
+  .check-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; padding: 10px 0; border-top: 0.5px solid var(--separator); }
+  .check-table tbody tr:nth-child(even) td { background: none; }
+  .check-table td { display: block; padding: 0; text-align: left !important; }
+  .check-table td.c-name { grid-column: 1 / 3; font-weight: 600; }
+  .check-table td[data-label]::before { content: attr(data-label); display: block; font-size: 13px; color: var(--label-2); }
+  .check-table td.c-state { grid-column: 1 / 3; font-weight: 600; }
   .portion-macros { grid-column: 1 / 3; }
 }
 
@@ -529,6 +545,10 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .search-item .tiny { flex: none; }
 .picked { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--fill); font-weight: 600; }
 @media (max-width: 640px) { .search-item { min-height: 48px; } .search-item .tiny { display: none; } }
+
+/* La página nunca se desplaza a los lados; los contenedores pueden encogerse. */
+html, body { overflow-x: hidden; }
+main, main > *, .card, .stack, .meal-card, .portion > * { min-width: 0; }
 
 /* ---------- iPhone y pantallas angostas ---------- */
 @media (max-width: 640px) {
@@ -560,6 +580,7 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   .card-table td.c-qty { grid-column: 3 / 4; }
   .card-table td.r { text-align: left; }
   .card-table td.c-sub, .card-table td.c-sub.r { grid-column: 4 / 6; text-align: right; font-weight: 600; line-height: 44px; }
+  .card-table td.c-sub { white-space: nowrap; }
   .food-table td.c-qty { grid-column: 1 / 3; grid-row: 3; }
   .food-table td.c-price { grid-column: 3 / 4; grid-row: 3; }
   .food-table td.c-sub { grid-column: 4 / 6; grid-row: 3; }

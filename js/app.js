@@ -712,9 +712,9 @@ function mealPlanner() {
     ${check.length ? `<section class="card stack">
       <h2>¿Compras lo que comes?</h2>
       <p class="sub">Lo que comen en una semana (${num(f.people) || 1} ${num(f.people) === 1 ? 'persona' : 'personas'}) contra lo que compras por semana.</p>
-      <div class="table-wrap"><table class="table">
+      <div class="table-wrap"><table class="table check-table">
         <thead><tr><th>Producto</th><th class="r">Comen/sem</th><th class="r">Compras/sem</th><th class="r">Estado</th></tr></thead>
-        <tbody>${check.map((c) => `<tr><td>${esc(c.name)}</td><td class="r num">${qtyText(c.eatWeek, c)}</td><td class="r num">${c.buyWeek == null ? '—' : qtyText(c.buyWeek, c)}</td><td class="r ${statusText[c.status][0]}">${c.status === 'sin-dato' ? `<button class="btn link sm" data-action="open" data-modal="nutricion" data-product="${c.id}">Falta cuánto trae…</button>` : statusText[c.status][1]}</td></tr>`).join('')}</tbody>
+        <tbody>${check.map((c) => `<tr><td class="c-name">${esc(c.name)}</td><td class="r num" data-label="Comen/sem">${qtyText(c.eatWeek, c)}</td><td class="r num" data-label="Compras/sem">${c.buyWeek == null ? '—' : qtyText(c.buyWeek, c)}</td><td class="r c-state ${statusText[c.status][0]}">${c.status === 'sin-dato' ? `<button class="btn link sm" data-action="open" data-modal="nutricion" data-product="${c.id}">Falta cuánto trae…</button>` : statusText[c.status][1]}</td></tr>`).join('')}</tbody>
       </table></div>
     </section>` : ''}`;
 }

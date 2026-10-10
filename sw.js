@@ -1,5 +1,6 @@
-// Funciona sin conexión: guarda la app en caché y la actualiza en segundo plano.
-const CACHE = 'finanzas-v3';
+// Funciona sin conexión. La app se pide primero a internet (así cada actualización se ve al abrirla)
+// y la copia guardada se usa solo si no hay conexión. Las llamadas a GitHub no pasan por aquí.
+const CACHE = 'finanzas-v4';
 const FILES = ['./', 'index.html', 'css/styles.css', 'js/app.js', 'js/engine.js', 'js/store.js', 'js/sync.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -11,14 +12,14 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET') return;
+  const req = e.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const network = fetch(e.request).then((res) => {
-        if (res.ok) caches.open(CACHE).then((c) => c.put(e.request, res.clone()));
+    fetch(req, { cache: 'no-cache' })
+      .then((res) => {
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
         return res;
-      }).catch(() => cached);
-      return cached || network;
-    }),
+      })
+      .catch(() => caches.match(req).then((cached) => cached || caches.match('index.html'))),
   );
 });
