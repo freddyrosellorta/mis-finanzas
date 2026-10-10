@@ -546,8 +546,21 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .picked { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--fill); font-weight: 600; }
 @media (max-width: 640px) { .search-item { min-height: 48px; } .search-item .tiny { display: none; } }
 
+/* Barra de lo marcado contra lo disponible (queda fija al desplazarse por la lista) */
+.selection-bar {
+  position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 12px;
+  padding: 10px 12px; border-radius: 10px; background: var(--content-bg);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 0.5px solid var(--group-border); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+.selection-bar .k { display: block; font-size: 11px; color: var(--label-2); }
+.selection-bar strong { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.selection-bar.over div:nth-child(3) strong { color: var(--text-red); }
+.selection-bar.ok div:nth-child(3) strong { color: var(--text-green); }
+.native .selection-bar { top: 0; }
+@media (max-width: 640px) { .selection-bar { top: env(safe-area-inset-top); gap: 4px 8px; } .selection-bar strong { font-size: 15px; } .selection-bar .k { font-size: 12px; } }
+
 /* La página nunca se desplaza a los lados; los contenedores pueden encogerse. */
-html, body { overflow-x: hidden; }
+html, body { overflow-x: clip; }
 main, main > *, .card, .stack, .meal-card, .portion > * { min-width: 0; }
 
 /* ---------- iPhone y pantallas angostas ---------- */

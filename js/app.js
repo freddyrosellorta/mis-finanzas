@@ -812,6 +812,20 @@ function orderRows(o, row) {
   }).join('');
 }
 
+// Barra fija al inicio de los productos: lo marcado contra el dinero disponible ahora en el sobre.
+function selectionBar(env, r, cur) {
+  if (!r.items && !r.missingPrices) return '';
+  const available = E.envToBase(state, env, 1) ? E.envelopeBalance(state, env.id) / E.envToBase(state, env, 1) : 0; // en la moneda del sobre
+  const left = Math.round((available - r.mine) * 100) / 100;
+  const over = left < -0.005;
+  return `<div class="selection-bar ${over ? 'over' : 'ok'}" role="status">
+      <div><span class="k">Marcados (${r.items})</span><strong class="num">${fmtIn(r.mine, cur)}</strong>${r.partner ? `<span class="tiny muted"> tu parte</span>` : ''}</div>
+      <div><span class="k">Disponible</span><strong class="num">${fmtIn(available, cur)}</strong></div>
+      <div><span class="k">${over ? 'Te excedes' : 'Te quedan'}</span><strong class="num">${fmtIn(Math.abs(left), cur)}</strong></div>
+      ${r.missingPrices ? `<div class="tiny muted" style="grid-column:1/-1">${r.missingPrices} marcado${r.missingPrices === 1 ? '' : 's'} sin precio no se suma${r.missingPrices === 1 ? '' : 'n'}.</div>` : ''}
+    </div>`;
+}
+
 // Etiqueta de estado debajo del nombre: comprado (con fecha) o última compra de un ocasional.
 function boughtTag(it, i) {
   if (!it.lastBought) return '';
@@ -898,6 +912,7 @@ function viewPedido(embedded = null) {
 
     <section class="card stack">
       <div class="row between"><h2>Productos habituales</h2><button class="btn sm" data-action="open" data-modal="producto">${sym('plus')} Agregar producto…</button></div>
+      ${selectionBar(env, r, cur)}
       <p class="sub">Marca lo que llevan en esta compra y ajusta las cantidades. Los precios se guardan para la siguiente.</p>
       ${hasTimes ? `<div class="row" style="flex-wrap:wrap"><span class="small">Quitar los comprados menos de</span><span class="popup" style="min-width:72px"><select class="input" aria-label="Veces" id="o-min">${[2, 3, 4, 5].map((n) => `<option ${n === 3 ? 'selected' : ''}>${n}</option>`).join('')}</select></span><span class="small">veces</span><button class="btn sm" data-action="order-prune">Quitar…</button></div>` : ''}
       ${o.items.length ? `<div class="table-wrap"><table class="table card-table list-table">
