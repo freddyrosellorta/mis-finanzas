@@ -621,7 +621,6 @@ function weeklyCard(env, compact = false) {
 const weeklyCards = () => state.envelopes.filter(E.isMonthlyList).map((e) => weeklyCard(e, true)).join('');
 
 const FREQ_NAMES = { semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual', ocasional: 'Ocasional' };
-const FREQ_PERIOD = { semanal: 'esta semana', quincenal: 'esta quincena', mensual: 'este mes' };
 const FREQ_QTY = { semanal: 'por semana', quincenal: 'por quincena', mensual: 'por mes', ocasional: 'por compra' };
 
 // Filas de la lista; en una compra fija se agrupan por frecuencia con un encabezado por grupo.
@@ -635,7 +634,7 @@ function orderRows(o, row) {
     if (!group.length) return '';
     const done = group.filter(({ it }) => E.isBought(it, today)).length;
     const cost = group.reduce((s, { it }) => s + num(it.price) * num(it.qty), 0);
-    const note = f === 'ocasional' ? ' · los cubre el margen' : ` · ${fmtIn(cost, E.envCurrency(state, currentOrder()))} ${FREQ_QTY[f]} · ${done} de ${group.length} comprados ${FREQ_PERIOD[f]}`;
+    const note = f === 'ocasional' ? ' · los cubre el margen' : ` · ${fmtIn(cost, E.envCurrency(state, currentOrder()))} ${FREQ_QTY[f]} · ${done} de ${group.length} comprados`;
     return `<tr class="group-row"><td colspan="${cols}">${FREQ_NAMES[f]}es${note}</td></tr>${group.map(({ it, i }) => row(it, i)).join('')}`;
   }).join('');
 }
@@ -653,11 +652,13 @@ function selectionBar(env, r, cur) {
     </div>`;
 }
 
-// Etiqueta de estado debajo del nombre: comprado (con fecha) o última compra de un ocasional.
+// Etiqueta de estado debajo del nombre: comprado (hasta cuándo), toca comprar o última compra de un ocasional.
 function boughtTag(it, i) {
   if (!it.lastBought) return '';
   const when = dateLabel(it.lastBought);
-  if (E.isBought(it, E.todayISO())) return `<div class="bought-tag">✓ Comprado el ${when} <button class="btn link sm" data-action="order-unbuy" data-i="${i}">Quitar</button></div>`;
+  const next = E.nextBuyDate(it);
+  if (E.isBought(it, E.todayISO())) return `<div class="bought-tag">✓ Comprado el ${when} · toca el ${dateLabel(next)} <button class="btn link sm" data-action="order-unbuy" data-i="${i}">Quitar</button></div>`;
+  if (next) return `<div class="tiny warn-ink">Toca comprar · última compra: ${when}</div>`;
   return `<div class="tiny muted">Última compra: ${when}</div>`;
 }
 
@@ -754,7 +755,7 @@ function viewPedido() {
           <td class="c-del"><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
       </table></div>
-      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button>${lists.length > 1 ? `<button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button>` : ''}</div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
+      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales pendientes</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button>${lists.length > 1 ? `<button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button>` : ''}</div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
     </section>
 
     <section class="card stack">

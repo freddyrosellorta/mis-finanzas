@@ -1,6 +1,6 @@
 // Funciona sin conexión. La app se pide primero a internet con un límite de 3 s (así cada actualización
 // se ve al abrirla); si no hay red o tarda, se usa la copia guardada. Las llamadas a GitHub no pasan por aquí.
-const CACHE = 'finanzas-v6';
+const CACHE = 'finanzas-v7';
 const FILES = ['./', 'index.html', 'css/styles.css', 'js/app.js', 'js/engine.js', 'js/store.js', 'js/sync.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-512.png'];
 const TIMEOUT = 3000;
 

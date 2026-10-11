@@ -175,16 +175,21 @@ export function mondayOf(dateISO) {
 }
 
 // ¿Ya se compró en el periodo actual? Mensual: este mes. Semanal: esta semana. Ocasional: nunca "pendiente".
-export function isBought(it, todayISO) {
-  if (!it.lastBought) return false;
+// Un producto queda como comprado durante su periodo completo contado desde la compra: semanal 7 días,
+// quincenal 15 días y mensual hasta el mismo día del mes siguiente (o el último día si ese mes es más corto).
+export function nextBuyDate(it) {
+  if (!it.lastBought) return null;
   const f = itemFrequency(it);
-  if (f === 'mensual') return it.lastBought.slice(0, 7) === todayISO.slice(0, 7);
-  if (f === 'semanal') return mondayOf(it.lastBought) === mondayOf(todayISO);
-  if (f === 'quincenal') {
-    const half = (iso) => `${iso.slice(0, 7)}-${Number(iso.slice(8, 10)) <= 15 ? 1 : 2}`;
-    return half(it.lastBought) === half(todayISO);
-  }
-  return false;
+  if (f === 'ocasional') return null;
+  const [y, m, d] = it.lastBought.split('-').map(Number);
+  const date = f === 'mensual'
+    ? new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()), 12)
+    : new Date(y, m - 1, d + (f === 'semanal' ? 7 : 15), 12);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+export function isBought(it, todayISO) {
+  const next = nextBuyDate(it);
+  return Boolean(next) && todayISO < next;
 }
 
 export function monthlyListBudget(env) {
