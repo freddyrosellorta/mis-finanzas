@@ -385,11 +385,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .sync-option:disabled { opacity: 0.5; }
 
 /* ---------- Macros ---------- */
-.macro { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
-.macro .meter { grid-column: 1 / -1; }
-.macro .vals { text-align: right; color: var(--label-2); white-space: nowrap; }
-.macro .vals .input { height: 22px; }
-.macro .state { font-size: 11px; font-weight: 500; margin-left: 4px; }
 
 /* ---------- Estadísticas ---------- */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
@@ -489,7 +484,7 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
   .month-nav button { width: 44px; height: 36px; }
   .env { padding: 12px; }
   .env .emoji { font-size: 24px; }
-  .table .input, .macro .vals .input { height: 36px; }
+  .table .input { height: 36px; }
   .stat .v { font-size: 20px; line-height: 25px; }
   .popup::after, .popup::before { right: 8px; width: 22px; height: 22px; }
   .popup::before { -webkit-mask-size: 22px 22px; mask-size: 22px 22px; }
@@ -499,8 +494,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 /* Tabla de alimentos: el nombre necesita espacio; la tabla se desplaza en pantallas angostas. */
 .table td:first-child { min-width: 190px; }
 .table td.check-cell { min-width: 0; width: 28px; }
-.btn.link.food-name { font-weight: 600; color: var(--label); padding: 0; height: auto; text-align: left; }
-.btn.link.food-name:hover { color: var(--accent); }
 
 /* Listas de compra: grupos por frecuencia y productos comprados */
 .table tr.group-row td { background: none !important; padding-top: 14px; font-weight: 600; color: var(--label-2); font-size: 12px; }
@@ -510,47 +503,12 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 /* Listas de compra: nombre del producto legible */
 .table input[data-field="name"][data-order-item] { min-width: 300px; }
 
-/* Menú por comidas */
-.meal-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: var(--content-bg); border: 0.5px solid var(--group-border); }
-.portion { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 28px; gap: 4px 10px; align-items: center; padding-top: 8px; border-top: 0.5px solid var(--separator); }
-.portion-name { justify-content: flex-start; text-align: left; white-space: normal; height: auto; color: var(--label); font-weight: 500; padding: 0; }
-.portion-amount { display: flex; gap: 6px; align-items: center; }
-.portion-amount .input { width: 76px; text-align: right; }
-.portion-macros { white-space: nowrap; }
 @media (max-width: 640px) {
-  .portion { grid-template-columns: minmax(0, 1fr) 36px; }
-  .portion-name { grid-column: 1; }
-  .portion-del { grid-column: 2; grid-row: 1; }
-  .portion-amount { grid-column: 1 / 3; }
-  .portion-amount .input { flex: 1; width: auto; min-width: 0; }
-  .portion-amount .popup { min-width: 0 !important; flex: 0 0 96px; }
-
   /* Plan: monto, moneda y equivalente se acomodan en varias líneas */
   .env-edit .row { flex-wrap: wrap; }
   @media (max-width: 360px) { .card-table td.c-sub { font-size: 15px; } }
   .env-edit .small.muted { white-space: normal !important; }
-
-  /* ¿Compras lo que comes? como tarjetas */
-  .check-table, .check-table tbody { display: block; width: 100%; }
-  .check-table thead { display: none; }
-  .check-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; padding: 10px 0; border-top: 0.5px solid var(--separator); }
-  .check-table tbody tr:nth-child(even) td { background: none; }
-  .check-table td { display: block; padding: 0; text-align: left !important; }
-  .check-table td.c-name { grid-column: 1 / 3; font-weight: 600; }
-  .check-table td[data-label]::before { content: attr(data-label); display: block; font-size: 13px; color: var(--label-2); }
-  .check-table td.c-state { grid-column: 1 / 3; font-weight: 600; }
-  .portion-macros { grid-column: 1 / 3; }
 }
-
-/* Buscador de alimentos */
-.search-results { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; margin-top: 6px; border-radius: 8px; border: 0.5px solid var(--group-border); background: var(--content-bg); }
-.search-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border: 0; background: none; text-align: left; font: inherit; color: var(--label); }
-.search-item + .search-item { border-top: 0.5px solid var(--separator); }
-.search-item:hover, .search-item.first { background: var(--fill); }
-.search-item span:first-child { min-width: 0; overflow-wrap: anywhere; }
-.search-item .tiny { flex: none; }
-.picked { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--fill); font-weight: 600; }
-@media (max-width: 640px) { .search-item { min-height: 48px; } .search-item .tiny { display: none; } }
 
 /* Barra de lo marcado contra lo disponible (queda fija al desplazarse por la lista) */
 .selection-bar {
@@ -563,8 +521,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; flex: none; }
 .selection-bar.over div:nth-child(3) strong { color: var(--text-red); }
 main > .selection-bar { margin: -4px 0; }
 .list-picker { flex: 1; min-width: 200px; max-width: 360px; }
-.food-tabs { align-self: stretch; display: grid; grid-template-columns: 1fr 1fr; }
-.food-tabs span { text-align: center; }
 details.budget > summary { list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: default; }
 details.budget > summary::-webkit-details-marker { display: none; }
 details.budget > summary::after { content: '›'; color: var(--label-3); font-size: 20px; transform: rotate(90deg); transition: transform 0.15s; }
@@ -576,7 +532,7 @@ details.budget[open] > summary { margin-bottom: 4px; }
 
 /* La página nunca se desplaza a los lados; los contenedores pueden encogerse. */
 html, body { overflow-x: clip; }
-main, main > *, .card, .stack, .meal-card, .portion > * { min-width: 0; }
+main, main > *, .card, .stack { min-width: 0; }
 
 /* ---------- iPhone y pantallas angostas ---------- */
 @media (max-width: 640px) {
@@ -598,7 +554,6 @@ main, main > *, .card, .stack, .meal-card, .portion > * { min-width: 0; }
   .card-table td { display: block; padding: 0; min-width: 0 !important; text-align: left; }
   .card-table td.c-check { grid-column: 1; grid-row: 1; align-self: center; }
   .card-table td.c-name { grid-column: 2 / 5; grid-row: 1; align-self: center; }
-  .food-table td.c-name { grid-column: 1 / 5; }
   .card-table td.c-del { grid-column: 5; grid-row: 1; align-self: center; justify-self: end; }
   .card-table td.c-name .input, .card-table input[data-field="name"][data-order-item] { min-width: 0; width: 100%; }
   .card-table td.c-times { display: none; }
@@ -609,13 +564,8 @@ main, main > *, .card, .stack, .meal-card, .portion > * { min-width: 0; }
   .card-table td.r { text-align: left; }
   .card-table td.c-sub, .card-table td.c-sub.r { grid-column: 4 / 6; text-align: right; font-weight: 600; line-height: 44px; }
   .card-table td.c-sub { white-space: nowrap; }
-  .food-table td.c-qty { grid-column: 1 / 3; grid-row: 3; }
-  .food-table td.c-price { grid-column: 3 / 4; grid-row: 3; }
-  .food-table td.c-sub { grid-column: 4 / 6; grid-row: 3; }
-  .food-table td.c-buy { grid-column: 1 / 6; grid-row: 4; display: flex; justify-content: space-between; color: var(--label-2); }
   .card-table td[data-label]::before { content: attr(data-label); display: block; color: var(--label-2); font-size: 13px; line-height: 18px; font-weight: 400; }
   .card-table td.c-sub[data-label]::before { line-height: 18px; }
-  .food-table td.c-buy[data-label]::before { display: inline; }
   .card-table td.c-price .input, .card-table td.c-qty .input { width: 100% !important; text-align: right; }
   .card-table td.c-price .money .input { padding-left: 20px; }
   .card-table tr.group-row { display: block; padding: 18px 2px 6px; margin: 0; background: none; border: 0; }

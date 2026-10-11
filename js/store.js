@@ -32,23 +32,6 @@ export function saveSyncConfig(config) {
   } catch { /* sin almacenamiento */ }
 }
 
-const FOOD_ITEMS = [
-  // Valores por 100 g (crudo). priceUnit: cómo se vende (kg, litro, pieza o paquete);
-  // priceGrams: gramos o ml que cubre el precio (1000 en kg y litro; peso de la pieza o contenido del paquete).
-  { id: 'avena', name: 'Avena en hojuelas', grams: 100, kcal: 389, protein: 16.9, fat: 6.9, carbs: 66, fiber: 10.6, price: 3, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'leche', name: 'Leche entera', grams: 500, kcal: 61, protein: 3.2, fat: 3.3, carbs: 4.8, fiber: 0, price: 1.5, priceGrams: 1000, priceUnit: 'litro' },
-  { id: 'huevo', name: 'Huevos (4 unidades)', grams: 200, kcal: 143, protein: 12.6, fat: 9.5, carbs: 0.7, fiber: 0, price: 0.25, priceGrams: 50, priceUnit: 'pieza' },
-  { id: 'pollo', name: 'Pechuga de pollo', grams: 400, kcal: 120, protein: 22.5, fat: 2.6, carbs: 0, fiber: 0, price: 6, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'arroz', name: 'Arroz blanco (crudo)', grams: 150, kcal: 360, protein: 6.6, fat: 0.6, carbs: 79, fiber: 1.3, price: 1.8, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'frijol', name: 'Frijoles negros (secos)', grams: 100, kcal: 341, protein: 21.6, fat: 1.4, carbs: 62, fiber: 15.5, price: 3, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'platano', name: 'Plátano / banano (2)', grams: 240, kcal: 89, protein: 1.1, fat: 0.3, carbs: 23, fiber: 2.6, price: 1.5, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'aceite', name: 'Aceite de oliva', grams: 20, kcal: 884, protein: 0, fat: 100, carbs: 0, fiber: 0, price: 9, priceGrams: 1000, priceUnit: 'litro' },
-  { id: 'mani', name: 'Mantequilla de maní', grams: 30, kcal: 588, protein: 25, fat: 50, carbs: 20, fiber: 6, price: 8, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'aguacate', name: 'Aguacate', grams: 100, kcal: 160, protein: 2, fat: 14.7, carbs: 8.5, fiber: 6.7, price: 4, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'verdura', name: 'Verduras variadas', grams: 300, kcal: 34, protein: 2.8, fat: 0.4, carbs: 7, fiber: 2.6, price: 3, priceGrams: 1000, priceUnit: 'kg' },
-  { id: 'creatina', name: 'Creatina (5 g)', grams: 5, kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, price: 25, priceGrams: 300, priceUnit: 'paquete' },
-];
-
 export function defaultState() {
   const month = monthKey(new Date());
   const inAYear = addMonths(month, 11);
@@ -78,8 +61,7 @@ export function defaultState() {
     partner: { name: 'Mi pareja', income: 0, mode: 'yo100', symbolic: 0 },
     envelopes: [
       env('renta', 'Renta', '🏠', 'necesidad', { role: 'renta', priority: 1, shared: true }),
-      env('comida', 'Alimentación', '🥗', 'necesidad', { role: 'comida', priority: 2 }),
-      env('hogar', 'Súper y gastos del hogar', '🛒', 'necesidad', { priority: 3, shared: true }),
+      env('hogar', 'Súper y comida', '🛒', 'necesidad', { priority: 2, shared: true }),
       env('servicios', 'Luz, agua y gas', '💡', 'necesidad', { priority: 4, shared: true }),
       env('internet', 'Internet de la casa', '📶', 'necesidad', { role: 'internet', priority: 5, shared: true, pending: true }),
       env('movil', 'Plan del móvil', '📱', 'necesidad', { role: 'movil', priority: 6 }),
@@ -97,17 +79,6 @@ export function defaultState() {
     ],
     payments: [],
     expenses: [],
-    food: {
-      linked: true,
-      wastePct: 10,
-      people: 1,         // personas que comen este menú (la compra y el costo se multiplican)
-      netCarbs: false,   // comparar carbohidratos netos (sin fibra) en lugar de totales
-      extraMonthly: 20,
-      targets: { kcal: 3150, protein: 197, fat: 105, carbs: 355, fiber: 44 },
-      meals: {},         // { desayuno: [{ id, productId, amount, unit: 'g' | 'pza' }], … }
-      nutrition: {},     // { productId: { kcal, protein, fat, carbs, fiber (por 100 g), pieceGrams, packGrams } }
-      items: FOOD_ITEMS.map((x) => ({ ...x })),
-    },
   };
 }
 
@@ -134,43 +105,75 @@ export function save(state) {
   }
 }
 
-// Completa campos que falten si el respaldo viene de una versión anterior.
-export const PRICE_UNITS = ['kg', 'litro', 'pieza', 'paquete', 'monto'];
-
-// Completa la unidad de venta de alimentos guardados con la versión anterior (priceLabel).
-export function normalizeFoodItem(item) {
-  const it = { ...item };
-  if (!PRICE_UNITS.includes(it.priceUnit)) {
-    const legacy = { kg: 'kg', litro: 'litro', unidad: 'pieza' }[it.priceLabel];
-    it.priceUnit = legacy || (Number(it.priceGrams) === 1000 || !it.priceGrams ? 'kg' : 'paquete');
+// Antes la comida tenía su propio sobre y lista (Alimentación, con menú y nutrición) aparte del súper.
+// Ahora todo va en una sola lista: los productos, el dinero y los gastos de Alimentación pasan al sobre
+// del súper. Da el mismo resultado en cada dispositivo y deja una marca de borrado para que la
+// sincronización no reviva el sobre viejo. Los movimientos entre ambos sobres ya no tienen sentido y se quitan.
+export function mergeFoodIntoHome(state) {
+  const food = state.envelopes.find((e) => e.role === 'comida');
+  if (!food) return state;
+  const home = state.envelopes.find((e) => e.id === 'hogar');
+  const now = Date.now();
+  if (!home) {
+    delete food.role;
+    food.updatedAt = now;
+    return state;
   }
-  if (it.priceUnit === 'kg' || it.priceUnit === 'litro') it.priceGrams = 1000;
-  delete it.priceLabel;
-  return it;
+  if (food.order) {
+    home.order ||= { monthly: true, items: [] };
+    const ids = new Set(home.order.items.map((it) => it.id));
+    home.order.items = [...food.order.items.filter((it) => !ids.has(it.id)), ...home.order.items];
+    home.order.monthly = Boolean(home.order.monthly || food.order.monthly);
+    const occasional = (Number(home.order.occasionalBudget) || 0) + (Number(food.order.occasionalBudget) || 0);
+    if (occasional) home.order.occasionalBudget = occasional;
+  }
+  if (!home.order?.monthly) home.monthly = (Number(home.monthly) || 0) + (Number(food.monthly) || 0);
+  home.priority = Math.min(Number(home.priority) || 99, Number(food.priority) || 99);
+  if (home.name === 'Súper y gastos del hogar') home.name = 'Súper y comida';
+  home.updatedAt = now;
+
+  const both = new Set([food.id, home.id]);
+  const internal = new Set(state.expenses.filter((x) => x.kind === 'transfer' && both.has(x.envId)).map((x) => x.pair)
+    .filter((pair) => pair && state.payments.some((p) => p.pair === pair && Object.keys(p.alloc || {}).every((id) => both.has(id)))));
+  state.deleted ||= {};
+  const keep = (x) => {
+    if (!(x.kind === 'transfer' && internal.has(x.pair))) return true;
+    state.deleted[x.id] = now;
+    return false;
+  };
+  state.expenses = state.expenses.filter(keep).map((x) => (x.envId === food.id ? { ...x, envId: home.id } : x));
+  state.payments = state.payments.filter(keep).map((p) => {
+    if (!p.alloc || !(food.id in p.alloc)) return p;
+    const alloc = { ...p.alloc };
+    alloc[home.id] = Math.round(((Number(alloc[home.id]) || 0) + (Number(alloc[food.id]) || 0)) * 100) / 100;
+    delete alloc[food.id];
+    return { ...p, alloc };
+  });
+  state.envelopes = state.envelopes.filter((e) => e !== food);
+  state.deleted[food.id] = now;
+  return state;
 }
 
 export function migrate(data) {
   const base = defaultState();
   if (!data || typeof data !== 'object' || !Array.isArray(data.envelopes)) throw new Error('Archivo no válido');
-  return {
+  const state = {
     ...base,
     ...data,
     settings: { ...base.settings, ...data.settings, surplus: { ...base.settings.surplus, ...(data.settings || {}).surplus } },
     partner: { ...base.partner, ...data.partner },
-    food: {
-      ...base.food,
-      ...data.food,
-      targets: { ...base.food.targets, ...(data.food || {}).targets },
-      items: ((data.food || {}).items || base.food.items).map(normalizeFoodItem),
-    },
     payments: data.payments || [],
     expenses: data.expenses || [],
     meta: data.meta || {},
     restored: data.restored || {},
-    trash: (data.trash || []).filter((t) => Date.now() - (Number(t.at) || 0) < 30 * 86400000),
+    trash: (data.trash || []).filter((t) => t.kind !== 'alimento' && Date.now() - (Number(t.at) || 0) < 30 * 86400000),
     deleted: data.deleted || {},
     updatedAt: Number(data.updatedAt) || 0,
   };
+  // Ya no hay menú ni datos de nutrición.
+  delete state.food;
+  delete state.meta.food;
+  return mergeFoodIntoHome(state);
 }
 
 export function exportFile(state) {

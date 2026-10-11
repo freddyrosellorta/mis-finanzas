@@ -4,7 +4,7 @@
 
 export const FILE = 'datos.cifrados.json';
 const ITERATIONS = 310000;
-const SECTIONS = ['settings', 'partner', 'food', 'onboarded'];
+const SECTIONS = ['settings', 'partner', 'onboarded'];
 
 // ---------- Base64 y texto ----------
 
@@ -94,7 +94,7 @@ export function mergeStates(local, remote) {
   const merged = { ...local, meta: {}, deleted, restored };
   // Un estado remoto recién instalado nunca reemplaza los ajustes de un dispositivo en uso.
   const remoteFresh = isFresh(remote) && !isFresh(local);
-  // Ajustes, pareja, alimentación y bienvenida: gana la sección modificada más recientemente.
+  // Ajustes, pareja y bienvenida: gana la sección modificada más recientemente.
   // En empate gana el estado guardado más recientemente.
   const remoteNewerOverall = ts(remote.updatedAt) > ts(local.updatedAt);
   for (const section of SECTIONS) {
@@ -169,13 +169,11 @@ export async function fetchRemoteState(config, fetchFn = fetch) {
 
 // Resumen para comparar dos copias de los datos antes de elegir cuál usar.
 export function summarize(state) {
-  const order = (state.envelopes || []).find((e) => e.order);
   return {
     pagos: (state.payments || []).filter((p) => !p.kind || p.kind === 'pago').length,
     gastos: (state.expenses || []).length,
     sobres: (state.envelopes || []).length,
-    alimentos: ((state.food || {}).items || []).length,
-    productos: order ? order.order.items.length : 0,
+    productos: (state.envelopes || []).reduce((n, e) => n + (e.order ? e.order.items.length : 0), 0),
     modificado: Number(state.updatedAt) || 0,
   };
 }

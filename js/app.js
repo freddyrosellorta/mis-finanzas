@@ -1,6 +1,6 @@
 // Interfaz de la app. Dibuja vistas con plantillas y reacciona con delegación de eventos.
 import * as E from './engine.js';
-import { load, save, defaultState, migrate, exportFile, isNative, postNative, loadSyncConfig, saveSyncConfig, PRICE_UNITS } from './store.js';
+import { load, save, defaultState, migrate, exportFile, isNative, postNative, loadSyncConfig, saveSyncConfig } from './store.js';
 import * as Sync from './sync.js';
 
 let state = load();
@@ -36,7 +36,7 @@ const SYMBOL_FALLBACK = {
   trash: '🗑', xmark: '✕', 'square.and.arrow.up': '↑', 'square.and.arrow.down': '↓', lightbulb: '💡',
   'checkmark.circle.fill': '✓', 'exclamationmark.triangle.fill': '⚠', 'xmark.octagon.fill': '⛔', 'info.circle.fill': 'ℹ',
   'building.columns': '🏦', 'arrow.counterclockwise': '↺', house: '🏠', target: '🎯', 'chart.pie': '🧮',
-  'fork.knife': '🥗', 'person.2': '🏡', shippingbox: '📦', cart: '🛒', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
+  'person.2': '🏡', shippingbox: '📦', cart: '🛒', 'clock.arrow.circlepath': '📜', gearshape: '⚙', book: '📘', 'ellipsis.circle': '☰',
 };
 function sym(name, cls = '') {
   const url = SYMBOLS[name];
@@ -101,7 +101,7 @@ function toast(msg, action = null) {
 
 // ---------- Papelera ----------
 // Lo borrado se guarda 30 días en `state.trash` para deshacer o restaurar.
-const TRASH_KINDS = { pago: 'Pago', gasto: 'Gasto', sobre: 'Sobre', alimento: 'Alimento', producto: 'Producto de una lista', productos: 'Productos de una lista' };
+const TRASH_KINDS = { pago: 'Pago', gasto: 'Gasto', sobre: 'Sobre', producto: 'Producto de una lista', productos: 'Productos de una lista' };
 function toTrash(kind, label, item, extra = {}) {
   const entry = { id: E.uid(), kind, label, at: Date.now(), item: structuredClone(item), extra };
   (state.trash ||= []).unshift(entry);
@@ -124,9 +124,6 @@ function restoreTrash(entryId) {
   } else if (entry.kind === 'sobre') {
     insertAt(state.envelopes, { ...item, updatedAt: now }, extra.index);
     revive(item.id);
-  } else if (entry.kind === 'alimento') {
-    insertAt(state.food.items, item, extra.index);
-    touch('food');
   } else if (entry.kind === 'producto') {
     const env = envById(extra.envId) || currentOrder();
     if (!env) return toast('Esa lista ya no existe; restaura primero su sobre.');
@@ -212,7 +209,7 @@ function applyRestore(snapshot, message = 'Copia restaurada ✓') {
   for (const x of [...state.payments, ...state.expenses, ...state.envelopes]) if (!keepIds.has(x.id)) deleted[x.id] = now;
   for (const id of keepIds) restored[id] = now;
   for (const env of snap.envelopes) env.updatedAt = now;
-  state = { ...snap, deleted, restored, trash: state.trash || [], meta: { settings: now, partner: now, food: now, onboarded: now } };
+  state = { ...snap, deleted, restored, trash: state.trash || [], meta: { settings: now, partner: now, onboarded: now } };
   closeModal();
   commit(message);
 }
@@ -571,11 +568,10 @@ function viewPlan() {
 }
 
 function envEditor(e, m) {
-  const auto = e.role === 'emergencia' || e.goal || (e.role === 'comida' && state.food.linked) || e.role === 'libre' || e.role === 'inversion' || E.isMonthlyList(e);
+  const auto = e.role === 'emergencia' || e.goal || e.role === 'libre' || e.role === 'inversion' || E.isMonthlyList(e);
   const target = E.monthlyTarget(state, e, m);
   const autoText = e.role === 'emergencia' ? 'Automático (fondo de emergencia)'
     : e.goal ? 'Automático (según la meta)'
-    : e.role === 'comida' ? 'Automático (pestaña Comida)'
     : E.isMonthlyList(e) ? 'Automático (lista de compra fija)'
     : 'Recibe el excedente';
   return `<div class="env-edit">
@@ -597,193 +593,11 @@ function envEditor(e, m) {
   </div>`;
 }
 
-function viewComida() {
-  const f = state.food;
-  const t = E.foodTotals(f);
-  const mt = E.mealTotals(f);
-  const fromMeals = mt.count > 0 || !f.items.length;
-  const tg = f.targets;
-  const macros = [
-    ['kcal', 'Calorías', 'kcal', 0.03], ['protein', 'Proteína', 'g', 0.03], ['fat', 'Grasas', 'g', 0.05],
-    ['carbs', f.netCarbs ? 'Carbohidratos netos' : 'Carbohidratos', 'g', 0.05], ['fiber', 'Fibra', 'g', 0],
-  ];
-  const cheap = f.items.filter((i) => i.protein >= 5 && num(i.price) > 0)
-    .map((i) => ({ name: i.name, cost: (num(i.price) / num(i.priceGrams || 1000)) * 100 / i.protein * 100 }))
-    .sort((a, b) => a.cost - b.cost).slice(0, 3);
-
-  return `<div class="page-head"><div><h1>Alimentación</h1><p>Tu compra de comida y tu plan de Pulso.</p></div></div>
-    ${foodTabs()}
-    ${ui.foodTab === 'menu' ? `
-    <section class="card stack">
-      <h2>Metas diarias de nutrición</h2>
-      <p class="sub">${fromMeals ? 'Suma de todas las comidas de tu menú (por persona). Ajusta las porciones hasta que todo quede en ✓.' : 'Ajusta los gramos de cada alimento hasta que todo quede en ✓.'} Las metas se pueden editar.</p>
-      ${macros.map(([k, label, unit, tol]) => {
-        const src = fromMeals ? mt.day : t;
-        const v = k === 'carbs' && f.netCarbs ? src.netCarbs : src[k]; const goal = num(tg[k]);
-        const diff = v - goal;
-        const ok = k === 'fiber' ? v >= goal : Math.abs(diff) <= goal * tol || (k === 'protein' && diff >= 0 && diff <= goal * 0.08);
-        return `<div class="macro">
-          <label for="tg-${k}"><strong>${label}</strong> <span class="state ${ok ? 'ok-ink' : 'warn-ink'}">${ok ? '✓ en meta' : diff < 0 ? `faltan ${Math.round(-diff)} ${unit}` : `sobran ${Math.round(diff)} ${unit}`}</span></label>
-          <div class="vals num">${Math.round(v)} / <input id="tg-${k}" class="input" style="display:inline-block;width:72px;min-height:30px;padding:2px 6px" type="number" value="${esc(goal)}" aria-label="Meta de ${label}" ${bind(`food.targets.${k}`)}> ${unit}</div>
-          ${meter(goal ? v / goal : 0, { color: ok ? 'var(--g-ahorro)' : 'var(--g-profesional)' })}
-        </div>`;
-      }).join('')}
-    </section>
-
-    ${mealPlanner()}
-
-    <section class="card stack">
-      <h2>Costo</h2>
-      <div class="stats">
-        <div class="stat"><div class="k">Por día${t.people > 1 ? ` (${t.people} personas)` : ''}</div><div class="v">${fmtCost(t.dailyCost)}</div>${isDual() ? `<div class="k">${inBase(t.dailyCost)}</div>` : ''}</div>
-        <div class="stat"><div class="k">Al mes${t.people > 1 ? ` (${t.people} personas)` : ''}</div><div class="v">${fmtCost(t.monthlyCost)}</div>${isDual() ? `<div class="k">${inBase(t.monthlyCost)}</div>` : ''}</div>
-      </div>
-      <div class="form-grid">
-        <div class="field"><label for="waste">Margen por merma</label>${percent(`id="waste" ${bind('food.wastePct')}`, f.wastePct)}<span class="help">Comida que se daña o sobra. 10% es razonable.</span></div>
-        <div class="field"><label for="extra">Extras al mes</label>${money(`id="extra" ${bind('food.extraMonthly')}`, f.extraMonthly, '', 'cost')}<span class="help">Condimentos, café, salsas.</span></div>
-      </div>
-      <div class="form-grid">
-        <div class="field"><label for="people">Personas que comen este menú</label><input id="people" class="input" type="number" inputmode="numeric" min="1" max="10" step="1" value="${esc(t.people)}" ${bind('food.people')}><span class="help">Los gramos del menú son por persona; la compra y el costo se multiplican.</span></div>
-      </div>
-      <label class="check switch-row"><span>Contar carbohidratos netos (sin fibra)</span><input type="checkbox" switch ${f.netCarbs ? 'checked' : ''} ${bind('food.netCarbs', 'bool')}></label>
-      ${E.isMonthlyList(foodEnvelope() || {}) ? '<p class="small ink-2">El presupuesto del sobre “Alimentación” lo define tu lista de compras de alimentación (abajo).</p>' : `<label class="check switch-row"><span>Usar este costo como presupuesto del sobre “Alimentación”</span><input type="checkbox" switch ${f.linked ? 'checked' : ''} ${bind('food.linked', 'bool')}></label>`}
-      ${cheap.length ? `<div class="tipcard info"><span class="ic">${sym('lightbulb')}</span><div><strong>Tu proteína más barata</strong><p>${cheap.map((c) => `${esc(c.name)}: ${fmtCost(c.cost)} por cada 100 g de proteína`).join(' · ')}. Comprar estos en cantidad es donde más ahorras.</p></div></div>` : ''}
-    </section>
-
-    ${f.items.length ? `<section class="card stack">
-      <div class="row between"><h2>Menú del día</h2><button class="btn sm" data-action="open" data-modal="alimento">${sym('plus')} Agregar alimento…</button></div>
-      <p class="sub">Elige cómo se vende cada producto y escribe su precio. La compra se redondea hacia arriba para una semana${t.people > 1 ? ` y ${t.people} personas` : ''}. Toca el nombre de un producto para cambiar cuánto trae su pieza o paquete.</p>
-      <div class="table-wrap"><table class="table card-table food-table">
-        <thead><tr><th>Alimento</th><th class="r">g/día${t.people > 1 ? ' por persona' : ''}</th><th class="r">Compra/semana</th><th>Se vende por</th><th class="r">Precio${isDual() ? ` (${costCode()})` : ''}</th><th class="r">Costo/semana</th><th></th></tr></thead>
-        <tbody>${f.items.map((it, i) => `<tr>
-          <td class="c-name"><button class="btn link food-name" data-action="open" data-modal="alimento" data-index="${i}" title="Editar ${esc(it.name)}">${esc(it.name)}</button><div class="tiny muted">${Math.round(it.protein * it.grams / 100)} g prot · ${Math.round(it.kcal * it.grams / 100)} kcal</div></td>
-          <td class="r c-qty" data-label="g/día"><input class="input num" style="width:64px" type="number" inputmode="decimal" min="0" value="${esc(it.grams)}" aria-label="Gramos al día de ${esc(it.name)}" data-food="${i}" data-field="grams" data-k="f:${i}:g"></td>
-          <td class="r num c-buy" data-label="Compra/semana">${purchase(it, t.people, i)}</td>
-          <td class="c-type"><span class="popup" style="min-width:126px"><select class="input" aria-label="Cómo se vende ${esc(it.name)}" data-food="${i}" data-field="priceUnit" data-type="text" data-k="f:${i}:u">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === it.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></td>
-          <td class="r c-price" data-label="Precio"><input class="input num" style="width:76px" type="number" inputmode="decimal" min="0" step="0.01" value="${num(it.price) ? esc(it.price) : ''}" placeholder="—" aria-label="Precio de ${esc(it.name)} ${UNIT_NAMES[it.priceUnit].por}" data-food="${i}" data-field="price" data-k="f:${i}:p"></td>
-          <td class="r num c-sub" data-label="Costo/semana">${E.weeklyCost(it, t.people) ? fmtCost(E.weeklyCost(it, t.people)) : '<span class="muted">—</span>'}</td>
-          <td class="c-del"><button class="icon-btn" data-action="del-food" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
-        </tr>`).join('')}</tbody>
-      </table></div>
-      <p class="tiny muted">Valores nutricionales aproximados por 100 g en crudo (base USDA). Tu app de nutrición sigue siendo la referencia exacta.</p>
-    </section>` : ''}
-    ` : foodListSection()}`;
-}
-
-// ---------- Menú por comidas ----------
-const MEAL_NAMES = { desayuno: 'Desayuno', merienda: 'Merienda', almuerzo: 'Almuerzo', preentreno: 'Preentreno', cena: 'Cena' };
-const foodProducts = () => foodEnvelope()?.order?.items || [];
-const macroLine = (n) => `${Math.round(n.kcal)} kcal · ${Math.round(n.protein)} g prot · ${Math.round(n.fat)} g grasa · ${Math.round(n.carbs)} g carbs`;
-
-function mealPlanner() {
-  const f = state.food;
-  const products = foodProducts();
-  if (!products.length) {
-    return `<section class="card stack"><h2>Menú por comidas</h2>
-      <p class="sub">Primero agrega los productos que compras a tu lista de compras de alimentación (abajo); luego arma aquí el desayuno, la merienda, el almuerzo, el preentreno y la cena con porciones de esos productos.</p></section>`;
-  }
-  const mt = E.mealTotals(f);
-  const goalKcal = num(f.targets.kcal);
-  const cards = E.MEALS.map((m) => {
-    const entries = (f.meals || {})[m] || [];
-    const tot = mt.meals[m];
-    const share = goalKcal ? Math.round((tot.kcal / goalKcal) * 100) : 0;
-    const rows = entries.map((e, i) => {
-      const p = products.find((x) => x.id === e.productId);
-      const n = (f.nutrition || {})[e.productId];
-      const g = E.portionGrams(f, e);
-      const units = n && num(n.pieceGrams) ? ['g', 'pza'] : ['g'];
-      return `<div class="portion">
-        <button class="btn link portion-name" data-action="open" data-modal="nutricion" data-product="${e.productId}" title="Datos nutricionales">${esc(p ? p.name : 'Producto eliminado')}</button>
-        <div class="portion-amount"><input class="input num" type="number" inputmode="decimal" min="0" step="any" value="${esc(e.amount)}" aria-label="Cantidad" data-meal="${m}" data-meal-i="${i}" data-field="amount" data-k="m:${m}:${i}:a">
-          <span class="popup" style="min-width:76px"><select class="input" aria-label="Unidad" data-meal="${m}" data-meal-i="${i}" data-field="unit" data-k="m:${m}:${i}:u">${units.map((u) => `<option value="${u}" ${(e.unit || 'g') === u ? 'selected' : ''}>${u === 'g' ? 'g' : 'pzas'}</option>`).join('')}</select></span></div>
-        <div class="tiny muted portion-macros">${n ? `${e.unit === 'pza' ? `${Math.round(g)} g · ` : ''}${Math.round(n.kcal * g / 100)} kcal · ${Math.round(n.protein * g / 100)} g prot` : '<span class="warn-ink">Faltan datos nutricionales</span>'}</div>
-        <button class="icon-btn portion-del" data-action="del-portion" data-meal="${m}" data-i="${i}" aria-label="Quitar" title="Quitar">${sym('trash')}</button>
-      </div>`;
-    }).join('');
-    return `<div class="meal-card">
-      <div class="row between" style="flex-wrap:wrap"><h3>${MEAL_NAMES[m]}</h3><span class="small ink-2">${entries.length ? `${macroLine(tot)} · <strong>${share}% del día</strong>` : 'Sin alimentos'}</span></div>
-      ${rows}
-      <div><button class="btn sm" data-action="open" data-modal="porcion" data-meal="${m}">${sym('plus')} Agregar a ${MEAL_NAMES[m].toLowerCase()}…</button></div>
-    </div>`;
-  }).join('');
-  const check = E.consumptionCheck(f, products);
-  const statusText = { 'de-mas': ['warn-ink', 'Compras de más'], falta: ['warn-ink', 'No alcanza'], bien: ['ok-ink', '✓ Justo'], 'sin-dato': ['muted', 'Falta cuánto trae'] };
-  const qtyText = (g, c) => (c.pieceGrams ? `${Math.round(g / c.pieceGrams)} pzas` : g >= 1000 ? `${Math.round(g / 100) / 10} kg` : `${g} g`);
-  return `<section class="card stack">
-      <h2>Menú por comidas</h2>
-      <p class="sub">Porciones por persona. Toca un producto para ver o cambiar sus datos nutricionales.</p>
-      <div class="stack" style="gap:10px">${cards}</div>
-      <div class="small"><strong>Total del día:</strong> ${macroLine(mt.day)} · fibra ${Math.round(mt.day.fiber)} g</div>
-    </section>
-    ${check.length ? `<section class="card stack">
-      <h2>¿Compras lo que comes?</h2>
-      <p class="sub">Lo que comen en una semana (${num(f.people) || 1} ${num(f.people) === 1 ? 'persona' : 'personas'}) contra lo que compras por semana.</p>
-      <div class="table-wrap"><table class="table check-table">
-        <thead><tr><th>Producto</th><th class="r">Comen/sem</th><th class="r">Compras/sem</th><th class="r">Estado</th></tr></thead>
-        <tbody>${check.map((c) => `<tr><td class="c-name">${esc(c.name)}</td><td class="r num" data-label="Comen/sem">${qtyText(c.eatWeek, c)}</td><td class="r num" data-label="Compras/sem">${c.buyWeek == null ? '—' : qtyText(c.buyWeek, c)}</td><td class="r c-state ${statusText[c.status][0]}">${c.status === 'sin-dato' ? `<button class="btn link sm" data-action="open" data-modal="nutricion" data-product="${c.id}">Falta cuánto trae…</button>` : statusText[c.status][1]}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </section>` : ''}`;
-}
-
-// Pestañas de Alimentación: Compras (la lista, lo de todos los días) y Menú (comidas y metas de Pulso).
-function foodTabs() {
-  const tab = ui.foodTab === 'menu' ? 'menu' : 'compras';
-  return `<div class="segmented food-tabs" role="tablist" aria-label="Alimentación">
-      ${[['compras', 'Compras'], ['menu', 'Menú y nutrición']].map(([v, l]) => `<label><input type="radio" name="food-tab" value="${v}" ${tab === v ? 'checked' : ''} data-food-tab><span>${l}</span></label>`).join('')}
-    </div>`;
-}
-
-// Lista de compras de alimentación (las mismas funciones que Listas de compra).
-function foodListSection() {
-  const env = foodEnvelope();
-  if (!env) return '';
-  if (!env.order) {
-    return `<section class="card stack">
-      <h2>Compras de alimentación</h2>
-      <p class="sub">Una lista de compras propia para la comida, con productos semanales, quincenales, mensuales y ocasionales, como la del hogar. También puedes mover productos desde otra lista con “Mover marcados…”.</p>
-      <div><button class="btn primary" data-action="create-food-list">${sym('plus')} Crear lista de alimentación</button></div>
-    </section>`;
-  }
-  return viewPedido(env);
-}
-
-// Cómo se vende cada alimento: por kg o litro (precio de 1000 g/ml), por pieza (con su peso) o por paquete (con su contenido).
-const UNIT_NAMES = {
-  kg: { por: 'por kg', one: 'kg', many: 'kg' },
-  litro: { por: 'por litro', one: 'L', many: 'L' },
-  pieza: { por: 'por pieza', one: 'pieza', many: 'piezas' },
-  paquete: { por: 'por paquete', one: 'paquete', many: 'paquetes' },
-  monto: { por: 'por monto ($)', one: 'vez', many: 'veces' },
-};
-const isWeighed = (it) => it.priceUnit === 'kg' || it.priceUnit === 'litro';
-
-// Compra de la semana en unidades redondeadas (½ kg, 3 paquetes, 42 piezas, 1 L cada 7 semanas).
-function purchase(it, people, index) {
-  const p = E.weeklyPurchase(it, people);
-  if (!p) return `<button class="btn link" data-action="open" data-modal="alimento" data-index="${index}">${it.priceUnit === 'monto' ? 'Falta cuántas veces…' : 'Falta cuánto trae…'}</button>`;
-  if (!p.amount) return '<span class="muted">—</span>';
-  if (it.priceUnit === 'monto') {
-    const each = num(it.price) ? ` de ${fmtCost(it.price)}` : '';
-    return p.everyWeeks > 1 ? `1${each} <span class="muted">cada ${p.everyWeeks} semanas</span>` : `${p.amount} ${p.amount === 1 ? 'vez' : 'veces'}${each}`;
-  }
-  const names = UNIT_NAMES[it.priceUnit];
-  const amount = p.amount === 0.5 ? '½' : String(p.amount).replace(/\.5$/, '½').replace(/^0½$/, '½');
-  const text = `${amount} ${p.amount <= 1 ? names.one : names.many}`;
-  return p.everyWeeks > 1 ? `${text} <span class="muted">cada ${p.everyWeeks} semanas</span>` : text;
-}
-
 // ---------- Listas de compra ----------
 // Cada lista vive en un sobre (`env.order`): productos habituales con precio y veces comprado. En cada compra
 // se marcan los que se llevan, se suma el envío (si hay) y se registra como gasto (tu parte, si tu pareja aporta).
-
-// La lista de Alimentación vive en su pestaña; las demás en Listas de compra.
-const foodEnvelope = () => state.envelopes.find((e) => e.role === 'comida');
-const orderLists = () => state.envelopes.filter((e) => e.order && e.role !== 'comida');
-const currentOrder = () => {
-  if (ui.view === 'comida') { const f = foodEnvelope(); return f && f.order ? f : null; }
-  return orderLists().find((e) => e.id === ui.orderId) || orderLists()[0];
-};
+const orderLists = () => state.envelopes.filter((e) => e.order);
+const currentOrder = () => orderLists().find((e) => e.id === ui.orderId) || orderLists()[0];
 
 // Tarjeta "Esta semana puedes gastar" de una lista fija (solo en el mes actual).
 function weeklyCard(env, compact = false) {
@@ -828,22 +642,13 @@ function orderRows(o, row) {
 
 // Barra fija al inicio de los productos: lo marcado contra el dinero disponible ahora en el sobre.
 function selectionBar(env, r, cur) {
-  // Con fondo compartido, Alimentación dispone de todo y las listas enlazadas de lo que sobre de ella.
-  const pool = E.sharedFoodPool(state);
-  const shared = pool && env.id in pool.available;
-  const available = shared ? pool.available[env.id] : E.balanceInEnv(state, env); // en la moneda del sobre
-  const food = shared ? envById(pool.food) : null;
-  const note = !shared ? ''
-    : env.id === pool.food
-      ? (pool.pool - pool.own[env.id] > 0.005 ? `Incluye ${fmtIn(pool.pool - pool.own[env.id], cur)} de ${pool.linked.map((id) => esc(envById(id).name)).join(', ')}; Alimentación tiene prioridad.` : '')
-      : `Parte de lo que sobra de ${esc(food.name)} (${fmtIn(pool.available[env.id] - pool.own[env.id], cur)}) más ${fmtIn(pool.own[env.id], cur)} de este sobre.`;
+  const available = E.balanceInEnv(state, env); // en la moneda del sobre
   const left = Math.round((available - r.mine) * 100) / 100;
   const over = left < -0.005;
   return `<div class="selection-bar ${over ? 'over' : 'ok'}" role="status">
       <div><span class="k">Marcados (${r.items})</span><strong class="num">${fmtIn(r.mine, cur)}</strong>${r.partner ? `<span class="tiny muted"> tu parte</span>` : ''}</div>
       <div><span class="k">Disponible</span><strong class="num">${fmtIn(available, cur)}</strong></div>
       <div><span class="k">${over ? 'Te excedes' : 'Te quedan'}</span><strong class="num">${fmtIn(Math.abs(left), cur)}</strong></div>
-      ${note ? `<div class="tiny muted" style="grid-column:1/-1">${note}</div>` : ''}
       ${r.missingPrices ? `<div class="tiny muted" style="grid-column:1/-1">${r.missingPrices} marcado${r.missingPrices === 1 ? '' : 's'} sin precio no se suma${r.missingPrices === 1 ? '' : 'n'}.</div>` : ''}
     </div>`;
 }
@@ -878,9 +683,8 @@ function pendingNote(env) {
   return `<span class="small ink-2">Pendientes: ${parts.join(' · ')}</span>`;
 }
 
-// `embedded`: la lista se muestra dentro de otra pestaña (Alimentación), sin título ni selector.
-function viewPedido(embedded = null) {
-  const env = embedded || currentOrder();
+function viewPedido() {
+  const env = currentOrder();
   const lists = orderLists();
   const switcher = `<div class="row" style="flex-wrap:wrap">
       ${lists.length > 1 ? `<span class="popup list-picker"><select class="input" aria-label="Lista" data-order-list>${lists.map((l) => `<option value="${l.id}" ${l.id === env?.id ? 'selected' : ''}>${esc(l.icon)} ${esc(l.name)}</option>`).join('')}</select></span>` : ''}
@@ -906,13 +710,12 @@ function viewPedido(embedded = null) {
     : r.diff >= 0 ? { level: 'good', icon: 'checkmark.circle.fill', title: `Cabe en el presupuesto: sobran ${fmtIn(r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}.` }
     : { level: 'warning', icon: 'exclamationmark.triangle.fill', title: `Te pasas por ${fmtIn(-r.diff, cur)}`, text: `Presupuesto del mes: ${fmtIn(r.budget, cur)}. Quita algún producto o mueve dinero de otro sobre.` };
 
-  return `${embedded ? '' : `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
-    ${switcher}`}
+  return `<div class="page-head"><div><h1>${esc(env.name)}</h1><p>${esc(env.icon)} Lista de compra${o.store ? ` · ${esc(o.store)}` : ''}</p></div></div>
+    ${switcher}
     ${selectionBar(env, r, cur)}
 
     <details class="card stack budget" ${innerWidth > 640 ? 'open' : ''}>
       <summary><h2>Presupuesto</h2><span class="small ink-2">${fmtIn(o.monthly ? E.monthlyListBudget(env).total : num(env.monthly), cur)} al mes</span></summary>
-      ${env.role !== 'comida' && foodEnvelope()?.order && E.envCurrency(state, foodEnvelope()) === cur ? `<label class="check switch-row"><span><strong>Usar lo que sobre de Alimentación</strong><span class="small ink-2" style="display:block">Esta lista parte de lo que queda en Alimentación después de lo marcado allí. Alimentación siempre tiene prioridad.</span></span><input type="checkbox" switch ${E.sharesWithFood(env) ? 'checked' : ''} data-order="sharesWithFood" data-k="o:share"></label>` : ''}
       <label class="check switch-row"><span><strong>Compra fija mensual</strong><span class="small ink-2" style="display:block">Los mismos productos cada mes (cantidades para un mes) más un margen para compras ocasionales.</span></span><input type="checkbox" switch ${o.monthly ? 'checked' : ''} data-order="monthly" data-k="o:monthly"></label>
       ${o.monthly ? (() => {
         const b = E.monthlyListBudget(env);
@@ -951,7 +754,7 @@ function viewPedido(embedded = null) {
           <td class="c-del"><button class="icon-btn" data-action="del-order-item" data-i="${i}" aria-label="Quitar ${esc(it.name)}" title="Quitar">${sym('trash')}</button></td>
         </tr>`)}</tbody>
       </table></div>
-      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button><button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button></div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
+      <div class="row" style="flex-wrap:wrap">${o.monthly ? '<button class="btn sm" data-action="order-mark" data-v="semanal">Marcar semanales de esta semana</button><button class="btn sm" data-action="order-mark" data-v="quincenal">Marcar quincenales pendientes</button><button class="btn sm" data-action="order-mark" data-v="mensual">Marcar mensuales pendientes</button>' : ''}<button class="btn sm" data-action="order-mark" data-v="1">Marcar todo</button><button class="btn sm" data-action="order-mark" data-v="0">Desmarcar todo</button>${lists.length > 1 ? `<button class="btn sm" data-action="open" data-modal="mover-lista" ${o.items.some((it) => it.selected) ? '' : 'disabled'} title="Mueve los productos marcados a otra lista">${sym('arrow.left.arrow.right')} Mover marcados…</button>` : ''}</div>` : '<p class="muted">Aún no hay productos. Agrega los que más suelen necesitar.</p>'}
     </section>
 
     <section class="card stack">
@@ -977,72 +780,11 @@ function viewPedido(embedded = null) {
     </section>`;
 }
 
-// Campos de precio de la hoja de alimento: solo los que aplican a la forma de compra elegida.
-function foodPriceFields(d) {
-  const price = (label, help = 'Puedes dejarlo vacío y ponerlo después.') =>
-    `<div class="field"><label for="a-price">${label}</label>${money('id="a-price" data-draft="price"', d.price, '', 'cost')}<span class="help">${help}</span></div>`;
-  const number = (key, label, help, attrs = 'min="1" step="any"') =>
-    `<div class="field"><label for="a-${key}">${label}</label><input id="a-${key}" class="input" type="number" inputmode="decimal" ${attrs} data-draft="${key}" value="${esc(d[key])}"><span class="help">${help}</span></div>`;
-  switch (d.priceUnit) {
-    case 'pieza': return price('Precio de una pieza') + number('priceGrams', 'Peso aproximado de una pieza (g)', 'No tiene que ser exacto: un huevo ≈ 50 g, un plátano ≈ 120 g. Sirve para saber cuántas comprar.');
-    case 'paquete': return price('Precio del paquete') + number('priceGrams', 'Contenido del paquete (g o ml)', 'Viene en la etiqueta: bolsa de pan 680 g, cartón de leche 1000 ml.');
-    case 'monto': return price('¿Cuánto pides cada vez?', 'Lo que pagas, p. ej. “deme $200 de pechuga”.') + number('perWeek', '¿Cuántas veces por semana?', 'Si es cada 2 semanas, escribe 0.5.', 'min="0.1" step="0.5"');
-    case 'litro': return price('Precio por litro');
-    default: return price('Precio por kg');
-  }
-}
-
-// Buscador de alimentos: coincide en cualquier parte del nombre, sin acentos ni mayúsculas.
-const fold = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-function searchProducts(query) {
-  const words = fold(query).split(/\s+/).filter(Boolean);
-  const products = foodProducts();
-  if (!words.length) return products;
-  return products
-    .map((p) => ({ p, name: fold(p.name) }))
-    .filter(({ name }) => words.every((w) => name.includes(w)))
-    .sort((a, b) => (a.name.startsWith(words[0]) ? 0 : 1) - (b.name.startsWith(words[0]) ? 0 : 1))
-    .map(({ p }) => p);
-}
-function productResults(query) {
-  const found = searchProducts(query);
-  if (!found.length) return '<p class="small muted" style="padding:8px 4px">Sin resultados. Agrega el producto a tu lista de compras de alimentación.</p>';
-  return found.map((p, i) => {
-    const n = (state.food.nutrition || {})[p.id];
-    return `<button class="search-item ${i === 0 && query ? 'first' : ''}" role="option" data-action="pick-product" data-id="${p.id}"><span>${esc(p.name)}</span><span class="tiny muted">${n ? `${Math.round(n.kcal)} kcal · ${Math.round(n.protein)} g prot /100 g` : 'sin datos nutricionales'}</span></button>`;
-  }).join('');
-}
-
-// Datos nutricionales de un producto (por 100 g), peso de una pieza y contenido de cada unidad comprada.
-const NUTRITION_FIELDS = [['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)']];
-function nutritionDraft(productId) {
-  const n = (state.food.nutrition || {})[productId] || {};
-  return { n_kcal: n.kcal ?? '', n_protein: n.protein ?? '', n_fat: n.fat ?? '', n_carbs: n.carbs ?? '', n_fiber: n.fiber ?? '', n_pieceGrams: n.pieceGrams || '', n_packGrams: n.packGrams || '' };
-}
-function nutritionFields(d) {
-  const field = (k, label, help = '') => `<div class="field"><label for="nf-${k}">${label}</label><input id="nf-${k}" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="n_${k}" value="${esc(d[`n_${k}`])}">${help ? `<span class="help">${help}</span>` : ''}</div>`;
-  return `<div class="form-grid">${NUTRITION_FIELDS.map(([k, l]) => field(k, `${l} por 100 g`)).join('')}</div>
-    <div class="form-grid">
-      ${field('pieceGrams', 'Peso de una pieza (g)', 'Opcional: para porciones en piezas (un huevo ≈ 50 g).')}
-      ${field('packGrams', 'Cuánto trae cada unidad que compras (g)', 'Para comparar con lo que comen (cartón de 30 huevos ≈ 1,500 g).')}
-    </div>`;
-}
-function saveNutrition(d) {
-  if (!(num(d.n_kcal) > 0)) { toast('Escribe al menos las calorías por 100 g'); return false; }
-  (state.food.nutrition ||= {})[d.productId] = {
-    kcal: num(d.n_kcal), protein: num(d.n_protein), fat: num(d.n_fat), carbs: num(d.n_carbs), fiber: num(d.n_fiber),
-    pieceGrams: num(d.n_pieceGrams), packGrams: num(d.n_packGrams),
-  };
-  touch('food');
-  return true;
-}
-
 function viewMas() {
   const item = (view, ico, t, d) => `<button data-action="go" data-view="${view}"><span class="ico">${sym(ico)}</span><span><span class="t">${t}</span><br><span class="d">${d}</span></span><span class="chev">${sym('chevron.forward')}</span></button>`;
   return `<div class="page-head"><div><h1>Más</h1></div></div>
     <section class="card menu">
       ${item('hogar', 'person.2', 'Hogar en pareja', 'Reparto justo de los gastos de la casa')}
-      ${item('pedido', 'cart', 'Listas de compra', 'Súper, pedido familiar y compras habituales')}
       ${item('consejos', 'lightbulb', 'Recomendaciones', 'Todo lo que la app detecta en tu plan')}
       ${item('historial', 'clock.arrow.circlepath', 'Historial', 'Pagos recibidos y gastos')}
       ${item('ajustes', 'gearshape', 'Ajustes y respaldo', 'Impuestos, moneda, exportar datos')}
@@ -1244,9 +986,9 @@ function viewOnb() {
        <div class="field"><label for="o-tax">Reserva para impuestos</label>${percent(`id="o-tax" ${bind('settings.taxPct')}`, s.taxPct)}<span class="help">Pon 0 si no aplica en tu país.</span></div>
      </div>`,
     `<h1>Gastos del mes</h1>
-     <p class="lead">Lo que necesitas para vivir y trabajar. La comida de tu plan de nutrición se calcula sola en la pestaña Comida.</p>
+     <p class="lead">Lo que necesitas para vivir y trabajar.</p>
      <div class="form-grid">
-       ${field('renta', '🏠 Renta')}${field('hogar', '🛒 Súper y gastos del hogar', 'Lo que no es tu plan de comida: limpieza, comida de ella, etc.')}
+       ${field('renta', '🏠 Renta')}${field('hogar', '🛒 Súper y comida', 'Comida, limpieza y todo lo del súper.')}
        ${field('servicios', '💡 Luz, agua y gas')}${field('internet', '📶 Internet de casa', 'Aún no lo tienes: pon lo que estimas pagar. Se ahorrará desde ya.')}
        ${field('movil', '📱 Plan del móvil')}${field('taxis', '🚕 Taxis y transporte')}
        ${field('gym', '🏋️ Gimnasio')}${field('salidas', '🍽️ Salidas en pareja')}
@@ -1395,7 +1137,7 @@ function modalHTML() {
     case 'sync':
       if (d.step === 'elegir') {
         const when = (t) => (t > 1e12 ? new Date(t).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
-        const rows = [['Pagos', 'pagos'], ['Gastos', 'gastos'], ['Sobres', 'sobres'], ['Alimentos del menú', 'alimentos'], ['Productos del pedido familiar', 'productos']];
+        const rows = [['Pagos', 'pagos'], ['Gastos', 'gastos'], ['Sobres', 'sobres'], ['Productos en listas', 'productos']];
         const option = (mode, title, text, primary = false) => `<button class="sync-option ${primary ? 'primary' : ''}" data-action="sync-choose" data-mode="${mode}"><strong>${title}</strong><span>${text}</span></button>`;
         return `${head('Ya hay datos sincronizados')}
           <p class="small ink-2">Este dispositivo y la copia sincronizada tienen datos. Elige qué hacer; antes de cambiar nada se guarda una copia de los datos de este dispositivo.</p>
@@ -1428,36 +1170,13 @@ function modalHTML() {
         ${d.list == null ? '<p class="muted">Cargando copias…</p>' : d.list.length ? `<div class="group-box">${d.list.map((c, i) => `<div class="mov"><div><strong>${esc(nice(c.label))}</strong><div class="meta">${when(c.at)}</div></div><div class="amt"><button class="btn sm" data-action="backup-pick" data-i="${i}">Restaurar…</button></div></div>`).join('')}</div>` : `<p class="muted">Todavía no hay copias${isNative ? '' : ' en este dispositivo. Puedes importar un respaldo exportado.'}</p>`}
         <div class="sheet-foot"><button class="btn" data-action="close">Cerrar</button></div>`;
     }
-    case 'porcion': {
-      const products = foodProducts();
-      const n = (state.food.nutrition || {})[d.productId];
-      return `${head(`Agregar a ${MEAL_NAMES[d.meal].toLowerCase()}`)}
-        ${d.productId ? `<div class="picked"><span>${esc(foodProducts().find((x) => x.id === d.productId)?.name || '')}</span><button class="btn link sm" data-action="pick-clear">Cambiar</button></div>`
-          : `<div class="field"><label for="po-q">Buscar alimento</label><input id="po-q" class="input" type="search" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe, p. ej. huevo, atún, avena…" value="${esc(d.query)}" data-draft="query" autofocus>
-          <div id="po-results" class="search-results" role="listbox">${productResults(d.query)}</div></div>`}
-        <div class="form-grid">
-          <div class="field"><label for="po-amt">Cantidad por persona</label><input id="po-amt" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="amount" value="${esc(d.amount)}"></div>
-          <div class="field"><label for="po-unit">Unidad</label><span class="popup"><select id="po-unit" class="input" data-draft="unit"><option value="g" ${d.unit === 'g' ? 'selected' : ''}>gramos</option><option value="pza" ${d.unit === 'pza' ? 'selected' : ''}>piezas</option></select></span></div>
-        </div>
-        ${!d.productId ? '' : n ? `<p class="small ink-2">Por 100 g: ${macroLine(n)}.${num(n.pieceGrams) ? ` Una pieza ≈ ${n.pieceGrams} g.` : ''}</p>` : `<p class="small warn-ink">Este producto aún no tiene datos nutricionales; agrégalos para que cuente en tus metas.</p>${nutritionFields(d)}`}
-        ${d.unit === 'pza' && n && !num(n.pieceGrams) ? '<p class="small warn-ink">Para usar piezas, indica el peso de una pieza en sus datos nutricionales.</p>' : ''}
-        ${foot('Agregar', 'save-porcion')}`;
-    }
-    case 'nutricion': {
-      const p = foodProducts().find((x) => x.id === d.productId);
-      return `${head('Datos nutricionales')}
-        <p class="small ink-2"><strong>${esc(p ? p.name : '')}</strong>. Valores por 100 g (de la etiqueta o de tu app de nutrición).</p>
-        ${nutritionFields(d)}
-        ${foot('Guardar', 'save-nutricion')}`;
-    }
     case 'mover-lista': {
       const from = currentOrder();
       const count = from ? from.order.items.filter((it) => it.selected).length : 0;
-      const food = foodEnvelope();
-      const targets = [...(food && food.id !== from?.id ? [food] : []), ...orderLists().filter((e) => e.id !== from?.id)];
+      const targets = orderLists().filter((e) => e.id !== from?.id);
       return `${head(`Mover ${count} ${count === 1 ? 'producto' : 'productos'}`)}
         <p class="small ink-2">Se llevan su tipo (semanal, quincenal…), precio, cantidad y estado de comprado.</p>
-        <div class="field"><label for="mv-to">A la lista</label><span class="popup"><select id="mv-to" class="input" data-draft="to">${targets.map((e) => `<option value="${e.id}" ${e.id === d.to ? 'selected' : ''}>${esc(e.icon)} ${e.role === 'comida' ? 'Alimentación' : esc(e.name)}${e.order ? '' : ' (se crea la lista)'}</option>`).join('')}</select></span></div>
+        <div class="field"><label for="mv-to">A la lista</label><span class="popup"><select id="mv-to" class="input" data-draft="to">${targets.map((e) => `<option value="${e.id}" ${e.id === d.to ? 'selected' : ''}>${esc(e.icon)} ${esc(e.name)}${e.order ? '' : ' (se crea la lista)'}</option>`).join('')}</select></span></div>
         ${foot('Mover', 'save-mover-lista')}`;
     }
     case 'nueva-lista': {
@@ -1478,19 +1197,6 @@ function modalHTML() {
         </div>
         ${foot('Agregar', 'save-producto')}`;
     }
-    case 'alimento':
-      return `${head(d.index != null ? 'Editar alimento' : 'Agregar alimento')}
-        <p class="small ink-2">Copia los valores por 100 g de la etiqueta o de tu app de nutrición.</p>
-        <div class="field"><label for="a-name">Nombre</label><input id="a-name" class="input" data-draft="name" value="${esc(d.name)}"></div>
-        <div class="form-grid">
-          ${[['kcal', 'Calorías'], ['protein', 'Proteína (g)'], ['fat', 'Grasa (g)'], ['carbs', 'Carbohidratos (g)'], ['fiber', 'Fibra (g)'], ['grams', 'Gramos al día por persona']]
-            .map(([k, l]) => `<div class="field"><label for="a-${k}">${l}</label><input id="a-${k}" class="input" type="number" inputmode="decimal" min="0" step="any" data-draft="${k}" value="${esc(d[k])}"></div>`).join('')}
-        </div>
-        <div class="form-grid">
-          <div class="field"><label for="a-unit">Se vende por</label><span class="popup"><select id="a-unit" class="input" data-draft="priceUnit">${PRICE_UNITS.map((u) => `<option value="${u}" ${u === d.priceUnit ? 'selected' : ''}>${UNIT_NAMES[u].por}</option>`).join('')}</select></span></div>
-          ${foodPriceFields(d)}
-        </div>
-        ${foot(d.index != null ? 'Guardar' : 'Agregar', 'save-alimento')}`;
     default:
       return '';
   }
@@ -1499,7 +1205,7 @@ function modalHTML() {
 function openModal(name, data = {}) {
   ui.modal = name;
   const base = { date: E.todayISO(), amount: '', note: '', client: '' };
-  if (name === 'gasto') base.envId = data.env || 'comida';
+  if (name === 'gasto') base.envId = data.env || 'hogar';
   if (name === 'mover') {
     base.currency = isDual() ? costCode() : baseCode();
     base.from = data.from || 'libre';
@@ -1511,24 +1217,13 @@ function openModal(name, data = {}) {
   if (name === 'sobre') base.id = data.id;
   if (name === 'sync') Object.assign(base, { repo: syncState.config?.repo || '', token: '', passphrase: '' });
   if (name === 'producto') Object.assign(base, { name: '', price: '', qty: 1 });
-  if (name === 'porcion') {
-    const first = foodProducts()[0];
-    Object.assign(base, { meal: data.meal, productId: null, query: '', amount: '', unit: 'g' });
-  }
-  if (name === 'nutricion') Object.assign(base, { productId: data.product, ...nutritionDraft(data.product) });
-  if (name === 'mover-lista') { const f = foodEnvelope(); base.to = f && f.id !== currentOrder()?.id ? f.id : orderLists().find((e) => e.id !== currentOrder()?.id)?.id; }
+  if (name === 'mover-lista') base.to = orderLists().find((e) => e.id !== currentOrder()?.id)?.id;
   if (name === 'nueva-lista') {
     const free = state.envelopes.filter((e) => !e.order && E.isManualEnvelope(e));
     const pick = free.find((e) => e.id === 'hogar' || /súper|super/i.test(e.name)) || free.find((e) => e.role !== 'renta') || free[0];
     Object.assign(base, { name: '', envId: pick?.id || 'nuevo' });
   }
   if (name === 'copias') { base.list = null; setTimeout(loadBackupList, 0); } // después de abrir la hoja
-  if (name === 'alimento') {
-    const existing = data.index != null ? state.food.items[Number(data.index)] : null;
-    Object.assign(base, existing
-      ? { ...existing, index: Number(data.index), price: num(existing.price) || '', priceGrams: E.weeklyPurchase(existing) === null || isWeighed(existing) ? '' : existing.priceGrams }
-      : { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: 0, grams: 100, price: '', priceUnit: 'kg', priceGrams: '' });
-  }
   ui.draft = base;
   renderModal();
   setTimeout(() => $modal.querySelector('[autofocus], input, select')?.focus(), 50);
@@ -1545,11 +1240,11 @@ function renderModal() {
 
 // ---------- Render principal ----------
 
-const NAV = [['inicio', 'house', 'Inicio'], ['metas', 'target', 'Metas'], ['plan', 'chart.pie', 'Plan'], ['comida', 'fork.knife', 'Comida'], ['mas', 'ellipsis.circle', 'Más']];
+const NAV = [['inicio', 'house', 'Inicio'], ['metas', 'target', 'Metas'], ['plan', 'chart.pie', 'Plan'], ['pedido', 'cart', 'Compras'], ['mas', 'ellipsis.circle', 'Más']];
 // Títulos cortos para la barra de herramientas de macOS (HIG: menos de 15 caracteres).
-const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', comida: 'Alimentación', mas: 'Más', hogar: 'Hogar en pareja', pedido: 'Listas de compra', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
+const VIEW_TITLES = { inicio: 'Inicio', metas: 'Metas', plan: 'Plan mensual', mas: 'Más', hogar: 'Hogar en pareja', pedido: 'Listas de compra', historial: 'Historial', ajustes: 'Ajustes', guia: 'Cómo funciona', consejos: 'Recomendaciones' };
 const MONTH_VIEWS = ['inicio', 'plan', 'historial', 'consejos'];
-const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, comida: viewComida, mas: viewMas, hogar: viewHogar, pedido: viewPedido, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
+const VIEWS = { inicio: viewInicio, metas: viewMetas, plan: viewPlan, mas: viewMas, hogar: viewHogar, pedido: viewPedido, historial: viewHistorial, ajustes: viewAjustes, guia: viewGuia, consejos: viewConsejos };
 
 function render() {
   const active = document.activeElement?.dataset?.k;
@@ -1586,12 +1281,12 @@ function changeCostCurrency(el) {
   const oldRate = E.fxRate(state);
   state.settings.costCurrency = el.value;
   const factor = E.fxRate(state) / oldRate;
-  if (factor !== 1 && !confirm(`Tus montos de sobres, metas y alimentos se convertirán de ${previous} a ${el.value} (1 ${baseCode()} = ${E.fxRate(state) === 1 ? oldRate : E.fxRate(state)} ${E.fxRate(state) === 1 ? previous : el.value}) para que conserven su valor. Revisa el tipo de cambio antes de continuar. ¿Convertir?`)) {
+  if (factor !== 1 && !confirm(`Tus montos de sobres, metas y listas se convertirán de ${previous} a ${el.value} (1 ${baseCode()} = ${E.fxRate(state) === 1 ? oldRate : E.fxRate(state)} ${E.fxRate(state) === 1 ? previous : el.value}) para que conserven su valor. Revisa el tipo de cambio antes de continuar. ¿Convertir?`)) {
     state.settings.costCurrency = previous;
     render();
     return;
   }
-  if (factor !== 1) { E.convertCosts(state, factor); touch('food'); }
+  if (factor !== 1) E.convertCosts(state, factor);
   touch('settings');
   persist();
   render();
@@ -1626,7 +1321,7 @@ document.addEventListener('change', (ev) => {
     if (el.dataset.bind === 'settings.currency' && costCode() === baseCode()) state.settings.costCurrency = el.value;
     setPath(state, el.dataset.bind, readValue(el));
     const section = el.dataset.bind.split('.')[0];
-    if (['settings', 'partner', 'food'].includes(section)) touch(section);
+    if (['settings', 'partner'].includes(section)) touch(section);
     persist();
     scheduleRender();
   } else if (el.dataset.env) {
@@ -1638,33 +1333,12 @@ document.addEventListener('change', (ev) => {
     e.updatedAt = Date.now();
     persist();
     scheduleRender();
-  } else if (el.dataset.food) {
-    const item = state.food.items[Number(el.dataset.food)];
-    if (el.dataset.field === 'priceUnit') {
-      item.priceUnit = el.value;
-      if (isWeighed(item)) {
-        item.priceGrams = 1000;
-      } else {
-        // Pieza, paquete o monto necesitan un dato más (peso, contenido o veces por semana): se abre la hoja.
-        item.priceGrams = 0;
-        touch('food');
-        persist();
-        render();
-        openModal('alimento', { index: el.dataset.food });
-        return;
-      }
-    } else {
-      item[el.dataset.field] = num(el.value);
-    }
-    touch('food');
-    persist();
-    scheduleRender();
   } else if (el.dataset.orderItem != null || el.dataset.order) {
     const env = currentOrder();
     if (!env) return;
     if (el.dataset.order) {
       const k = el.dataset.order;
-      env.order[k] = k === 'store' ? el.value : k === 'monthly' || k === 'sharesWithFood' ? el.checked : num(el.value);
+      env.order[k] = k === 'store' ? el.value : k === 'monthly' ? el.checked : num(el.value);
       // Al activar la compra fija, los productos existentes empiezan como fijos.
       if (k === 'monthly' && el.checked) for (const it of env.order.items) if (!it.frequency) it.frequency = E.itemFrequency(it);
     } else {
@@ -1695,30 +1369,13 @@ document.addEventListener('change', (ev) => {
   } else if (el.id === 'import-file' && el.files[0]) {
     importBackup(el.files[0]);
     el.value = '';
-  } else if (el.matches('[data-food-tab]')) {
-    ui.foodTab = el.value;
-    render();
-    window.scrollTo(0, 0);
   } else if (el.matches('[data-order-list]')) {
     ui.orderId = el.value;
     render();
-  } else if (el.dataset.meal && el.dataset.mealI != null) {
-    const e = state.food.meals[el.dataset.meal][Number(el.dataset.mealI)];
-    e[el.dataset.field] = el.dataset.field === 'unit' ? el.value : num(el.value);
-    touch('food');
-    persist();
-    scheduleRender();
-  } else if ((el.dataset.draft === 'productId' || el.dataset.draft === 'unit') && ui.modal === 'porcion') {
-    ui.draft[el.dataset.draft] = el.value;
-    if (el.dataset.draft === 'productId') Object.assign(ui.draft, nutritionDraft(el.value));
-    renderModal();
   } else if (el.dataset.draft === 'to' && ui.modal === 'mover-lista') {
     ui.draft.to = el.value;
   } else if (el.dataset.draft === 'envId' && ui.modal === 'nueva-lista') {
     ui.draft.envId = el.value;
-    renderModal();
-  } else if (el.dataset.draft === 'priceUnit' && ui.modal === 'alimento') {
-    ui.draft.priceUnit = el.value;
     renderModal();
   } else if (el.dataset.draft === 'currency') {
     // Al cambiar de moneda en Mover dinero se convierte el monto escrito.
@@ -1738,9 +1395,6 @@ document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (!el.dataset.draft) return;
   ui.draft[el.dataset.draft] = el.value;
-  if (ui.modal === 'porcion' && el.dataset.draft === 'query') {
-    document.getElementById('po-results').innerHTML = productResults(el.value);
-  }
   if ((ui.modal === 'pago' || ui.modal === 'saldo') && ['amount', 'rate'].includes(el.dataset.draft)) {
     const eq = document.getElementById('fx-equiv');
     if (eq) eq.textContent = fxEquiv(ui.draft);
@@ -1798,20 +1452,6 @@ const ACTIONS = {
     state.payments.push(saldo);
     closeModal(); commit('Saldo registrado ✓');
   },
-  'save-alimento': () => {
-    const d = ui.draft;
-    if (!d.name.trim()) return toast('Escribe el nombre del alimento');
-    const priceUnit = PRICE_UNITS.includes(d.priceUnit) ? d.priceUnit : 'kg';
-    const weighed = priceUnit === 'kg' || priceUnit === 'litro';
-    if ((priceUnit === 'pieza' || priceUnit === 'paquete') && !num(d.priceGrams)) return toast(priceUnit === 'pieza' ? 'Escribe el peso aproximado de una pieza' : 'Escribe el contenido del paquete');
-    if (priceUnit === 'monto' && !(num(d.perWeek) > 0)) return toast('Escribe cuántas veces por semana lo compras');
-    const item = { name: d.name.trim(), grams: num(d.grams), kcal: num(d.kcal), protein: num(d.protein), fat: num(d.fat), carbs: num(d.carbs), fiber: num(d.fiber), price: num(d.price), priceUnit, priceGrams: weighed ? 1000 : priceUnit === 'monto' ? 0 : num(d.priceGrams) };
-    if (priceUnit === 'monto') item.perWeek = num(d.perWeek);
-    if (d.index != null) Object.assign(state.food.items[d.index], item);
-    else state.food.items.push({ id: E.uid(), ...item });
-    touch('food');
-    closeModal(); commit(d.index != null ? 'Alimento actualizado ✓' : 'Alimento agregado ✓');
-  },
   'order-unbuy': (el) => {
     const env = currentOrder();
     const it = env.order.items[Number(el.dataset.i)];
@@ -1826,46 +1466,7 @@ const ACTIONS = {
     touch('settings');
     commit(on ? 'Fondo de emergencia activado ✓' : 'Fondo de emergencia en pausa');
   },
-  'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = envById(el.dataset.id)?.role === 'comida' ? 'comida' : 'pedido'; render(); window.scrollTo(0, 0); },
-  'pick-product': (el) => {
-    const n = (state.food.nutrition || {})[el.dataset.id];
-    Object.assign(ui.draft, { productId: el.dataset.id, ...nutritionDraft(el.dataset.id), unit: n && num(n.pieceGrams) ? 'pza' : 'g' });
-    renderModal();
-    $modal.querySelector('#po-amt')?.focus();
-  },
-  'pick-clear': () => {
-    ui.draft.productId = null;
-    renderModal();
-    $modal.querySelector('#po-q')?.focus();
-  },
-  'save-porcion': () => {
-    const d = ui.draft;
-    if (!d.productId) return toast('Busca y elige un alimento');
-    if (!(num(d.amount) > 0)) return toast('Escribe la cantidad');
-    if (!state.food.nutrition?.[d.productId]) {
-      if (!saveNutrition(d)) return;
-    }
-    if (d.unit === 'pza' && !num(state.food.nutrition[d.productId].pieceGrams)) return toast('Indica el peso de una pieza en los datos nutricionales');
-    (state.food.meals ||= {});
-    (state.food.meals[d.meal] ||= []).push({ id: E.uid(), productId: d.productId, amount: num(d.amount), unit: d.unit });
-    touch('food');
-    closeModal(); commit('Agregado ✓');
-  },
-  'save-nutricion': () => { if (saveNutrition(ui.draft)) { closeModal(); commit('Datos nutricionales guardados ✓'); } },
-  'del-portion': (el) => {
-    const list = state.food.meals[el.dataset.meal];
-    const index = Number(el.dataset.i);
-    const [entry] = list.splice(index, 1);
-    touch('food');
-    commit();
-    toast('Quitado del menú', { label: 'Deshacer', run: () => { list.splice(index, 0, entry); touch('food'); commit(); } });
-  },
-  'create-food-list': () => {
-    const env = foodEnvelope();
-    env.order = { monthly: true, store: '', shipping: 0, occasionalBudget: 0, items: [] };
-    env.updatedAt = Date.now();
-    commit('Lista de alimentación creada ✓');
-  },
+  'go-list': (el) => { ui.orderId = el.dataset.id; ui.view = 'pedido'; render(); window.scrollTo(0, 0); },
   'save-mover-lista': () => {
     const from = currentOrder();
     const to = envById(ui.draft.to);
@@ -1879,8 +1480,7 @@ const ACTIONS = {
     from.updatedAt = to.updatedAt = Date.now();
     closeModal();
     commit();
-    const name = to.role === 'comida' ? 'Alimentación' : to.name;
-    toast(`${moved.length} ${moved.length === 1 ? 'producto movido' : 'productos movidos'} a ${name}`, { label: 'Deshacer', run: () => {
+    toast(`${moved.length} ${moved.length === 1 ? 'producto movido' : 'productos movidos'} a ${to.name}`, { label: 'Deshacer', run: () => {
       to.order.items = to.order.items.filter((it) => !set.has(it));
       for (const { item, index } of moved) from.order.items.splice(Math.min(index, from.order.items.length), 0, item);
       from.updatedAt = to.updatedAt = Date.now();
@@ -1953,8 +1553,7 @@ const ACTIONS = {
     const r = E.orderSummary(env);
     if (!r.total) return;
     const cur = E.envCurrency(state, env);
-    const pool = E.sharedFoodPool(state);
-    const availableNow = pool && env.id in pool.available ? pool.available[env.id] : E.balanceInEnv(state, env);
+    const availableNow = E.balanceInEnv(state, env);
     const exceed = Math.round((r.mine - availableNow) * 100) / 100;
     if (!confirm(`¿Registrar la compra de ${fmtIn(r.total, cur)}? Se anotará ${r.partner ? `tu parte (${fmtIn(r.mine, cur)})` : 'ese monto'} como gasto del sobre “${env.name}”.${exceed > 0.005 ? `\n\nOjo: excede lo disponible por ${fmtIn(exceed, cur)}; el sobre quedará en negativo hasta el próximo ingreso.` : ''}`)) return;
     const expense = {
@@ -1964,22 +1563,11 @@ const ACTIONS = {
       order: { total: r.total, partner: r.partner, units: r.units, currency: cur, ...(env.order.monthly ? E.orderParts(env) : {}), items: env.order.items.filter((it) => it.selected && num(it.qty) > 0).map((it) => `${it.qty} × ${it.name}`) },
     };
     if (isDual() && !envIsBase(env)) expense.original = { amount: r.mine, currency: cur, rate: E.fxRate(state) };
-    // Fondo compartido: si este sobre no alcanza, se trae lo necesario del otro (respetando la prioridad de Alimentación).
-    const moved = [];
-    for (const t of E.poolTransfers(state, env.id, r.mine)) {
-      const from = envById(t.from);
-      const usd = Math.floor(E.envToBase(state, env, t.amount) * 100) / 100; // hacia abajo: el origen nunca queda en negativo por centavos
-      const pair = E.uid();
-      const original = isDual() && !envIsBase(env) ? { amount: t.amount, currency: cur, rate: E.fxRate(state) } : undefined;
-      state.expenses.push({ id: E.uid(), pair, kind: 'transfer', date: expense.date, envId: from.id, amount: usd, note: `Movido a ${env.name}`, original });
-      state.payments.push({ id: E.uid(), pair, kind: 'transfer', date: expense.date, amount: usd, client: '', note: `Desde ${from.name}`, alloc: { [env.id]: usd }, original });
-      moved.push(`${fmtIn(t.amount, cur)} de ${from.name}`);
-    }
     state.expenses.push(expense);
     // Los productos comprados quedan como "Comprado" y se desmarcan para la siguiente compra.
     for (const it of env.order.items) if (it.selected && num(it.qty) > 0) { it.lastBought = expense.date; it.selected = false; }
     env.updatedAt = Date.now();
-    commit(moved.length ? `Compra registrada ✓ · se usaron ${moved.join(' y ')}` : 'Compra registrada ✓');
+    commit('Compra registrada ✓');
   },
   resolve: (el) => {
     const id = el.dataset.rec;
@@ -1994,12 +1582,6 @@ const ACTIONS = {
     state = draft;
     for (const section of E.FIX_SECTIONS[id] || []) touch(section);
     commit('Recomendación resuelta ✓');
-  },
-  'del-food': (el) => {
-    const index = Number(el.dataset.i);
-    const [item] = state.food.items.splice(index, 1);
-    touch('food');
-    undoable(toTrash('alimento', item.name, item, { index }), `“${item.name}” quitado del menú`);
   },
   'del-pay': (el) => {
     const pay = state.payments.find((p) => p.id === el.dataset.id);
@@ -2093,7 +1675,7 @@ const ACTIONS = {
     let data;
     try { data = JSON.parse(await readBackup(entry)); } catch { return toast('No se pudo leer esa copia.'); }
     const r = Sync.summarize(data);
-    if (!confirm(`¿Restaurar la copia del ${new Date(entry.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}?\n\nTiene ${r.pagos} pagos, ${r.gastos} gastos, ${r.sobres} sobres y ${r.alimentos} alimentos. Tus datos actuales se guardarán en una copia antes.`)) return;
+    if (!confirm(`¿Restaurar la copia del ${new Date(entry.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}?\n\nTiene ${r.pagos} pagos, ${r.gastos} gastos, ${r.sobres} sobres y ${r.productos} productos en listas. Tus datos actuales se guardarán en una copia antes.`)) return;
     applyRestore(data);
   },
   'trash-empty': () => {
@@ -2127,11 +1709,6 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && ui.modal) closeModal();
-  if (ev.key === 'Enter' && ui.modal === 'porcion' && ev.target.id === 'po-q') {
-    ev.preventDefault();
-    $modal.querySelector('[data-action="pick-product"]')?.click();
-    return;
-  }
   if (ev.key === 'Enter' && ui.modal && ev.target.tagName === 'INPUT') {
     const btn = $modal.querySelector('.sheet-foot .btn.primary');
     if (btn) { ev.preventDefault(); btn.click(); }

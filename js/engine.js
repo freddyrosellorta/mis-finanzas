@@ -94,108 +94,6 @@ export function referenceIncome(state, month) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-// ---------- Alimentación ----------
-
-// Compra semanal de un alimento para todas las personas, redondeada hacia arriba en la unidad en que se vende:
-// piezas y paquetes enteros; kg y litros en medios. Si dura más de una semana, se indica cada cuántas semanas.
-// Costo semanal de un alimento para todas las personas, en la moneda de gastos.
-// "Por monto" (p. ej. "deme $200 de pechuga") no necesita peso: monto × veces por semana.
-export function weeklyCost(item, people = 1) {
-  if (item.priceUnit === 'monto') return (Number(item.price) || 0) * (Number(item.perWeek) || 0);
-  const size = Number(item.priceGrams) || 0;
-  if (!size) return 0;
-  return ((Number(item.grams) || 0) * Math.max(1, people) * 7 / size) * (Number(item.price) || 0);
-}
-
-export function weeklyPurchase(item, people = 1) {
-  if (item.priceUnit === 'monto') {
-    const per = Number(item.perWeek) || 0;
-    if (!per) return null; // falta cuántas veces por semana
-    return per >= 1 ? { amount: per, everyWeeks: 1, exact: per } : { amount: 1, everyWeeks: Math.round(1 / per), exact: per };
-  }
-  const need = (Number(item.grams) || 0) * Math.max(1, people) * 7; // g o ml por semana
-  const size = Number(item.priceGrams) || 0;
-  if (!need) return { amount: 0, everyWeeks: 1, exact: 0 };
-  if (!size) return null; // falta el contenido del paquete o el peso de la pieza
-  const exact = need / size; // en kg, litros, piezas o paquetes
-  const step = item.priceUnit === 'kg' || item.priceUnit === 'litro' ? 0.5 : 1;
-  if (exact >= step) return { amount: Math.ceil(exact / step - 1e-9) * step, everyWeeks: 1, exact };
-  return { amount: step, everyWeeks: Math.max(1, Math.floor(step / exact)), exact };
-}
-
-// ---------- Menú por comidas ----------
-// Cada comida tiene porciones de productos de la lista de alimentación. Los datos nutricionales
-// van por producto (por 100 g); una porción puede ser en gramos o en piezas (con el peso de una pieza).
-
-export const MEALS = ['desayuno', 'merienda', 'almuerzo', 'preentreno', 'cena'];
-const MACROS = ['kcal', 'protein', 'fat', 'carbs', 'fiber'];
-const zero = () => Object.fromEntries(MACROS.map((k) => [k, 0]));
-
-export function portionGrams(food, entry) {
-  const n = (food.nutrition || {})[entry.productId] || {};
-  const amount = Number(entry.amount) || 0;
-  return entry.unit === 'pza' ? amount * (Number(n.pieceGrams) || 0) : amount;
-}
-
-export function mealTotals(food) {
-  const meals = {};
-  const day = zero();
-  for (const meal of MEALS) {
-    const t = zero();
-    for (const e of (food.meals || {})[meal] || []) {
-      const n = (food.nutrition || {})[e.productId];
-      if (!n) continue;
-      const f = portionGrams(food, e) / 100;
-      for (const k of MACROS) t[k] += (Number(n[k]) || 0) * f;
-    }
-    meals[meal] = t;
-    for (const k of MACROS) day[k] += t[k];
-  }
-  day.netCarbs = Math.max(0, day.carbs - day.fiber);
-  return { meals, day, count: MEALS.reduce((s, m) => s + ((food.meals || {})[m] || []).length, 0) };
-}
-
-const PER_WEEK = { semanal: 1, quincenal: 0.5, mensual: 12 / 52, ocasional: 0 };
-
-// ¿Compras lo que comes? Consumo semanal de cada producto contra lo que se compra a la semana.
-export function consumptionCheck(food, listItems = []) {
-  const people = Math.max(1, Math.round(Number(food.people) || 1));
-  const eat = {};
-  for (const meal of MEALS) for (const e of (food.meals || {})[meal] || []) eat[e.productId] = (eat[e.productId] || 0) + portionGrams(food, e) * 7 * people;
-  return listItems.filter((it) => eat[it.id] > 0).map((it) => {
-    const n = (food.nutrition || {})[it.id] || {};
-    const pack = Number(n.packGrams) || 0;
-    const buy = pack ? (Number(it.qty) || 0) * PER_WEEK[itemFrequency(it)] * pack : null;
-    const ratio = buy == null ? null : buy / eat[it.id];
-    const status = ratio == null ? 'sin-dato' : ratio > 1.15 ? 'de-mas' : ratio < 0.95 ? 'falta' : 'bien';
-    return { id: it.id, name: it.name, eatWeek: Math.round(eat[it.id]), buyWeek: buy == null ? null : Math.round(buy), status, pieceGrams: Number(n.pieceGrams) || 0 };
-  });
-}
-
-export function foodTotals(food) {
-  const t = { kcal: 0, protein: 0, fat: 0, carbs: 0, fiber: 0, dailyCost: 0 };
-  for (const it of food.items) {
-    const g = Number(it.grams) || 0;
-    const f = g / 100;
-    t.kcal += it.kcal * f;
-    t.protein += it.protein * f;
-    t.fat += it.fat * f;
-    t.carbs += it.carbs * f;
-    t.fiber += it.fiber * f;
-  }
-  // Los gramos son por persona (para comparar con las metas); la compra y el costo son para todos.
-  t.people = Math.max(1, Math.round(Number(food.people) || 1));
-  // Lo que se compra por peso o pieza lleva margen de merma; lo comprado por monto ya es lo que se paga.
-  const byWeight = food.items.filter((it) => it.priceUnit !== 'monto').reduce((s, it) => s + weeklyCost(it, t.people), 0) / 7;
-  const byMoney = food.items.filter((it) => it.priceUnit === 'monto').reduce((s, it) => s + weeklyCost(it, t.people), 0) / 7;
-  t.dailyCost = byWeight + byMoney;
-  // Carbohidratos netos = totales menos fibra (como los cuentan muchas apps de nutrición).
-  t.netCarbs = Math.max(0, t.carbs - t.fiber);
-  const waste = 1 + (Number(food.wastePct) || 0) / 100;
-  t.monthlyCost = byWeight * 30.4 * waste + byMoney * 30.4 + (Number(food.extraMonthly) || 0);
-  return t;
-}
-
 // ---------- Pareja ----------
 
 export function partnerShare(state, month) {
@@ -220,7 +118,7 @@ export function partnerShare(state, month) {
 
 // ---------- Monedas ----------
 // Los ingresos y saldos están en la moneda de ingresos (settings.currency, p. ej. USD).
-// Los costos (montos de sobres, precios de metas y alimentos) se capturan en la moneda de gastos
+// Los costos (montos de sobres, precios de metas y de las listas) se capturan en la moneda de gastos
 // (settings.costCurrency, p. ej. MXN). fxRate = unidades de la moneda de gastos por 1 de ingresos.
 
 export function fxRate(state) {
@@ -387,54 +285,10 @@ function listWeek(state, env, dateISO) {
   };
 }
 
-// ---------- Fondo compartido con Alimentación ----------
-// Alimentación y las listas enlazadas (misma moneda; por defecto "Súper y gastos del hogar") comparten el dinero.
-// Alimentación tiene prioridad: puede usar todo el fondo. Cada lista enlazada parte de lo que sobra después
-// de lo marcado en Alimentación (y en las listas anteriores).
-
-export const sharesWithFood = (env) => Boolean(env.order) && env.role !== 'comida' && (env.order.sharesWithFood ?? env.id === 'hogar');
-
 // Saldo de un sobre en su propia moneda.
 export function balanceInEnv(state, env) {
   const usdPerUnit = envToBase(state, env, 1);
   return usdPerUnit ? envelopeBalance(state, env.id) / usdPerUnit : 0;
-}
-
-export function sharedFoodPool(state) {
-  const food = state.envelopes.find((e) => e.role === 'comida' && e.order);
-  if (!food) return null;
-  const cur = envCurrency(state, food);
-  const linked = state.envelopes.filter((e) => sharesWithFood(e) && envCurrency(state, e) === cur);
-  if (!linked.length) return null;
-  const r = (n) => Math.round(n * 100) / 100;
-  const own = Object.fromEntries([food, ...linked].map((e) => [e.id, r(balanceInEnv(state, e))]));
-  const pool = r(Object.values(own).reduce((a, b) => a + b, 0));
-  // Alimentación no hereda los faltantes de las listas enlazadas (solo sus saldos positivos).
-  const available = { [food.id]: r(own[food.id] + linked.reduce((s, e) => s + Math.max(0, own[e.id]), 0)) };
-  let rest = pool - orderSummary(food).mine;
-  const fromFood = r(Math.max(0, own[food.id] - orderSummary(food).mine));
-  for (const e of linked) { available[e.id] = r(rest); rest -= orderSummary(e).mine; }
-  return { food: food.id, linked: linked.map((e) => e.id), own, pool, available, fromFood };
-}
-
-// Cuánto hay que traer de otros sobres del fondo para pagar `amount` desde `envId`, respetando la prioridad
-// de Alimentación (a una lista enlazada solo se le da lo que sobra de lo marcado en Alimentación).
-export function poolTransfers(state, envId, amount) {
-  const p = sharedFoodPool(state);
-  if (!p || !(envId in p.available)) return [];
-  let missing = Math.round((amount - p.own[envId]) * 100) / 100;
-  if (missing <= 0.005) return [];
-  const out = [];
-  const sources = envId === p.food ? p.linked : [p.food, ...p.linked.filter((id) => id !== envId)];
-  for (const id of sources) {
-    const env = state.envelopes.find((e) => e.id === id);
-    const reserved = id === p.food ? orderSummary(env).mine : 0;
-    const can = Math.max(0, p.own[id] - reserved);
-    const take = Math.min(can, missing);
-    if (take > 0.005) { out.push({ from: id, amount: Math.round(take * 100) / 100 }); missing -= take; }
-    if (missing <= 0.005) break;
-  }
-  return out;
 }
 
 export function orderSummary(env) {
@@ -471,14 +325,11 @@ export function convertCosts(state, factor) {
     if (isManualEnvelope(env) && Number(env.monthly)) { env.monthly = round(env.monthly); env.updatedAt = now; }
     if (env.goal && Number(env.goal.target)) { env.goal.target = round(env.goal.target); env.updatedAt = now; }
   }
-  for (const item of state.food.items) item.price = round(item.price);
-  state.food.extraMonthly = round(state.food.extraMonthly);
 }
 
 // ---------- Metas mensuales ----------
 
 function baseMonthly(state, env, month) {
-  if (env.role === 'comida' && state.food.linked && !isMonthlyList(env)) return Math.ceil(costToBase(state, foodTotals(state.food).monthlyCost) * 100) / 100;
   // Lista fija mensual: el presupuesto es lo fijo más el margen para ocasionales.
   const monthly = isMonthlyList(env) ? monthlyListBudget(env).total : Number(env.monthly) || 0;
   // El aporte fijo de la pareja (si lo hay) se descuenta: el sobre solo aparta tu parte.
