@@ -86,7 +86,11 @@ export function load() {
   try {
     const raw = isNative ? window.__NATIVE__?.data : localStorage.getItem(KEY);
     if (!raw) return defaultState();
-    return migrate(JSON.parse(raw));
+    const data = JSON.parse(raw);
+    const state = migrate(data);
+    // Datos de la versión con Alimentación aparte: se guardan ya unidos para no repetir la migración.
+    if (data.food || data.envelopes.some((e) => e.role === 'comida')) save(state);
+    return state;
   } catch {
     return defaultState();
   }
